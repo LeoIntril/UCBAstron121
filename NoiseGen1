@@ -9,7 +9,7 @@ sdr.center_freq = 100e6          # tune to quiet band
 sdr.gain = 20                    # fixed gain (recommended for noise)
 
 #Define samples to collect
-Nsamp = 50000                    # tens of thousands
+Nsamp = 20000                    # tens of thousands
 samples = sdr.capture_data(Nsamp)
 
 print(f"Captured {len(samples)} samples")
