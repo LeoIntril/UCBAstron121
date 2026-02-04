@@ -23,3 +23,13 @@ print("I variance:", np.var(I))
 print("Q mean:", np.mean(Q))
 print("Q variance:", np.var(Q))
 
+np.savez(
+    "sdr_capture.npz",
+    samples=samples,
+    I=I,
+    Q=Q,
+    sample_rate=sdr.sample_rate,
+    center_freq=sdr.center_freq,
+    gain=sdr.gain,
+    Nsamp=Nsamp
+)
