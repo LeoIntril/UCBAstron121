@@ -1,0 +1,25 @@
+#Import necessary packages
+import numpy as np
+import ugradio
+
+sdr = ugradio.sdr.SDR()
+
+sdr.sample_rate = 2.4e6          # Hz
+sdr.center_freq = 100e6          # tune to quiet band
+sdr.gain = 20                    # fixed gain (recommended for noise)
+
+#Define samples to collect
+Nsamp = 50000                    # tens of thousands
+samples = sdr.capture_data(Nsamp)
+
+print(f"Captured {len(samples)} samples")
+
+#Check sample statistics
+I = np.real(samples)
+Q = np.imag(samples)
+
+print("I mean:", np.mean(I))
+print("I variance:", np.var(I))
+print("Q mean:", np.mean(Q))
+print("Q variance:", np.var(Q))
+
