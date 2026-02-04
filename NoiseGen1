@@ -33,3 +33,22 @@ np.savez(
     gain=sdr.gain,
     Nsamp=Nsamp
 )
+
+#Due to time delay code below can act as a trial
+import numpy as np
+import ugradio
+import time
+
+sdr = ugradio.sdr.SDR()
+sdr.sample_rate = 1.0e6
+sdr.center_freq = 100e6
+sdr.gain = 20
+
+_ = sdr.capture_data(1000)
+time.sleep(0.1)
+
+samples = sdr.capture_data(20000)
+print("Captured:", len(samples))
+
+sdr.close()
+print("Finished cleanly")
