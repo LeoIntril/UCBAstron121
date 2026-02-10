@@ -1,0 +1,17 @@
+[project]
+name = "lab1tools"
+version = "0.1.0"
+description = "Tools used in the first lab of Astron121."
+readme = "README.md"
+authors = [
+    { name = "LeoIntril", email = "leo_intriligator@berkeley.edu" }
+]
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+lab1tools = "lab1tools:main"
+
+[build-system]
+requires = ["uv_build>=0.10.0,<0.11.0"]
+build-backend = "uv_build"
