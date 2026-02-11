@@ -15,7 +15,7 @@ nsamples = 2**18         # large for noise reduction
 
 # Frequency switching offset (Hz)
 # Keeps line well inside analog passband
-freq_offset = 100e3      # 100 kHz
+freq_offset = 250e3      # 100 kHz
 
 ############################
 # SET UP SDR
