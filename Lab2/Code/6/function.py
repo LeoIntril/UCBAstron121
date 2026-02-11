@@ -1,3 +1,6 @@
+import os
+import numpy as np
+
 def capture_spectrum(
     sdr,
     lo_freq,
@@ -5,6 +8,19 @@ def capture_spectrum(
     ntrials=4,
     outdir="data"
 ):
+    """
+    Capture multiple power spectra at a given LO frequency using RTL-SDR.
+
+    - Uses synchronous reads (read_samples)
+    - Reshapes into (nblocks, nsamples)
+    - Saves one NPZ per trial
+    - Returns all spectra and their average
+    """
+
+    # Ensure output directory exists
+    os.makedirs(outdir, exist_ok=True)
+
+    # Tune LO
     sdr.center_freq = lo_freq
     print(f"\nTuned LO to {lo_freq/1e6:.6f} MHz ({label})")
 
@@ -13,8 +29,12 @@ def capture_spectrum(
     for trial in range(ntrials):
         print(f"  Trial {trial+1}/{ntrials}")
 
-        # Synchronous read — NO async objects
+        # Blocking read: returns 1D complex array
         data = sdr.read_samples(nsamples * nblocks)
+
+        # Sanity check
+        if data.size != nsamples * nblocks:
+            raise RuntimeError("Incorrect number of samples returned from SDR")
 
         # Reshape into blocks
         data = data.reshape((nblocks, nsamples))
@@ -26,16 +46,20 @@ def capture_spectrum(
         )
 
         power = np.abs(fft)**2
+
+        # Average over blocks
         spec = np.mean(power, axis=0)
         spectra.append(spec)
 
+        # Filename
         fname = (
             f"{outdir}/"
             f"{label}_"
-            f"{int(lo_freq/1e3)}kHz_"
+            f"{lo_freq/1e6:.3f}MHz_"
             f"trial{trial:02d}.npz"
         )
 
+        # Save trial
         np.savez(
             fname,
             raw_data=data,
