@@ -42,20 +42,6 @@ def capture_spectrum(
     ntrials=4,
     outdir="data"
 ):
-    """
-    Capture multiple spectra at a given LO frequency.
-    
-    Saves one NPZ per trial containing:
-      - raw voltage data
-      - power spectrum
-      - LO frequency
-      - metadata
-    
-    Returns:
-      spectra: (ntrials, nsamples) array
-      avg_spec: averaged spectrum
-    """
-
     sdr.center_freq = lo_freq
     print(f"\nTuned LO to {lo_freq/1e6:.6f} MHz ({label})")
 
@@ -70,15 +56,21 @@ def capture_spectrum(
             nblocks=nblocks
         )
 
-        # FFT and power spectrum
-        fft = np.fft.fftshift(np.fft.fft(data, axis=-1), axes=-1)
+        # Explicit reshape for RTL-SDR
+        data = data.reshape((nblocks, nsamples))
+
+        # FFT along time axis
+        fft = np.fft.fftshift(
+            np.fft.fft(data, axis=1),
+            axes=1
+        )
+
         power = np.abs(fft)**2
 
         # Average over blocks
         spec = np.mean(power, axis=0)
         spectra.append(spec)
 
-        # Save trial
         fname = (
             f"{outdir}/"
             f"{label}_"
@@ -104,6 +96,7 @@ def capture_spectrum(
     avg_spec = np.mean(spectra, axis=0)
 
     return spectra, avg_spec
+
 
 
 ############################
