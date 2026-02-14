@@ -75,17 +75,17 @@ async def integrate(lo_freq, n_integrations, label):
     ax.set_title(label)
 
     for i in range(n_integrations):
+        # Capture enough samples for one FFT
+        data = await capture_samples(lo_freq, 1)  # capture one buffer at a time
+        if len(data) < nsamples:
+            continue  # wait until we have enough samples
 
-        # Each call captures nblocks of nsamples
-        data = await capture_samples(lo_freq, nblocks)
-
-        fft = np.fft.fftshift(np.fft.fft(data.reshape(nblocks, nsamples), axis=-1), axes=-1)
+        fft = np.fft.fftshift(np.fft.fft(data[:nsamples]))
         power = np.abs(fft)**2
-        spec = np.mean(power, axis=0)
-        avg_spec += spec
+        avg_spec += power
 
         if (i+1) % live_update_interval == 0:
-            line.set_ydata(avg_spec/(i+1))
+            line.set_ydata(avg_spec / (i+1))
             ax.relim()
             ax.autoscale_view()
             plt.draw()
@@ -96,6 +96,7 @@ async def integrate(lo_freq, n_integrations, label):
     plt.show()
 
     return avg_spec / n_integrations
+
 
 ############################
 # MAIN OBSERVATION FLOW
