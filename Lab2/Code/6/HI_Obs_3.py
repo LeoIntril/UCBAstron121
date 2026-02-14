@@ -35,11 +35,11 @@ def capture(label, center_freq):
     sdr.gain = gain
     sdr.center_freq = center_freq
 
-    # Capture data (1D or 2D)
+    # Capture data
     data = ugradio.sdr.capture_data(sdr, nsamples=nsamples, nblocks=nblocks)
 
-    # Ensure it's a 1D NumPy array
-    data = np.asarray(data).flatten()
+    # Convert to NumPy array of complex64
+    data = np.array(data, dtype=np.complex64).flatten()
 
     # FFT and power spectrum
     fft = np.fft.fftshift(np.fft.fft(data))
@@ -48,7 +48,6 @@ def capture(label, center_freq):
     print(f"{label} capture complete. Data length: {len(data)}")
     sdr.close()
     return data, power
-
 
 
 ############################
