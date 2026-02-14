@@ -23,77 +23,87 @@ outdir = "data"
 os.makedirs(outdir, exist_ok=True)
 
 ############################
-# HELPER FUNCTION
+# HELPER FUNCTIONS
 ############################
 
-def capture_one_shot(label, lo_freq):
+def capture(label, center_freq):
     """
-    Capture a single spectrum using a fresh SDR instance.
-    Returns the raw data array.
+    Capture a spectrum using ugradio.sdr.capture_data().
+    Returns raw voltage data and the computed power spectrum.
     """
     input(f"Aim horn at {label} and press Enter...")
 
-    # Initialize SDR
-    sdr = ugradio.sdr.RtlSdr()
-    sdr.sample_rate = sample_rate
-    sdr.gain = gain
-    sdr.direct = False
-    sdr.center_freq = lo_freq
+    # Capture raw data (ugradio handles SDR internally)
+    data = ugradio.sdr.capture_data(
+        nsamples=nsamples,
+        nblocks=nblocks,
+        sample_rate=sample_rate,
+        center_freq=center_freq,
+        gain=gain,
+        direct=False
+    )
 
-    # Capture data
-    data = ugradio.sdr.capture_data(sdr, nsamples=nsamples, nblocks=nblocks)
-    sdr.close()
-
-    print(f"{label} capture complete.")
-    return data
-
-def compute_power(data):
-    """Compute power spectrum from raw data"""
+    # FFT and power spectrum
     fft = np.fft.fftshift(np.fft.fft(data[:nsamples]))
     power = np.abs(fft)**2
-    return power
+
+    print(f"{label} capture complete.")
+    return data, power
 
 ############################
-# MAIN SCRIPT
+# 1️⃣ Cold Sky Calibration
 ############################
 
-# 1️⃣ Cold sky
-data_cold = capture_one_shot("COLD SKY", HI_FREQ)
-spec_cold = compute_power(data_cold)
+data_cold, spec_cold = capture("COLD SKY", HI_FREQ)
 
-# 2️⃣ Hot load
-data_hot = capture_one_shot("HOT LOAD", HI_FREQ)
-spec_hot = compute_power(data_hot)
+############################
+# 2️⃣ Hot Load Calibration
+############################
 
-# 3️⃣ Y-factor and system temperature
+data_hot, spec_hot = capture("HOT LOAD", HI_FREQ)
+
+############################
+# 3️⃣ Compute Y-factor and system temperature
+############################
+
 P_cold = np.mean(spec_cold)
 P_hot = np.mean(spec_hot)
 Y = P_hot / P_cold
 T_sys = (T_hot - Y*T_cold) / (Y - 1)
+
 print(f"Y-factor: {Y:.4f}, Estimated system temperature: {T_sys:.2f} K")
 
-# 4️⃣ Hydrogen observation
-data_upper = capture_one_shot("TARGET HI UPPER LO", HI_FREQ - freq_offset)
-spec_upper = compute_power(data_upper)
+############################
+# 4️⃣ Hydrogen Observation
+############################
 
-data_lower = capture_one_shot("TARGET HI LOWER LO", HI_FREQ + freq_offset)
-spec_lower = compute_power(data_lower)
+data_upper, spec_upper = capture("HI TARGET UPPER LO", HI_FREQ - freq_offset)
+data_lower, spec_lower = capture("HI TARGET LOWER LO", HI_FREQ + freq_offset)
 
 diff_spec = spec_upper - spec_lower
 T_ant = T_sys * (diff_spec / P_cold)
 
+############################
 # 5️⃣ Frequency and velocity axes
+############################
+
 freqs = np.fft.fftshift(np.fft.fftfreq(nsamples, d=1/sample_rate))
 rf_freqs = freqs + (HI_FREQ - freq_offset)  # reference to upper LO
 velocity = c * (HI_FREQ - rf_freqs) / HI_FREQ / 1000  # km/s
 
+############################
 # 6️⃣ Metadata
+############################
+
 unix_time = ugradio.timing.unix_time()
 lat = ugradio.nch.lat
 lon = ugradio.nch.lon
 
-# 7️⃣ Save all spectra and calibration
-np.savez(f"{outdir}/hi_21cm_final.npz",
+############################
+# 7️⃣ Save results
+############################
+
+np.savez(os.path.join(outdir, "hi_21cm_final.npz"),
          freq_Hz=rf_freqs,
          velocity_kms=velocity,
          temperature_K=T_ant,
@@ -113,11 +123,15 @@ np.savez(f"{outdir}/hi_21cm_final.npz",
          nblocks=nblocks,
          unix_time=unix_time,
          latitude_deg=lat,
-         longitude_deg=lon)
+         longitude_deg=lon
+         )
 
 print("Observation complete. Saved to hi_21cm_final.npz")
 
-# 8️⃣ Optional: plot final calibrated spectrum
+############################
+# 8️⃣ Optional plotting
+############################
+
 plt.figure()
 plt.plot(velocity, T_ant)
 plt.xlabel("Velocity (km/s)")
