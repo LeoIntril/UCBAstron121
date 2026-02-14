@@ -35,22 +35,17 @@ def capture(label, center_freq):
     sdr.gain = gain
     sdr.center_freq = center_freq
 
-    # Capture data
-    result = ugradio.sdr.capture_data(sdr, nsamples=nsamples, nblocks=nblocks)
-    voltages = result['samples']  # extract the raw voltage array
+    # Capture data (1D array)
+    data = ugradio.sdr.capture_data(sdr, nsamples=nsamples, nblocks=nblocks)
 
-    # FFT & power spectrum
-    if voltages.ndim == 2:
-        fft_blocks = np.fft.fftshift(np.fft.fft(voltages, axis=-1), axes=-1)
-        power_blocks = np.abs(fft_blocks)**2
-        power = np.mean(power_blocks, axis=0)
-    else:
-        fft = np.fft.fftshift(np.fft.fft(voltages))
-        power = np.abs(fft)**2
+    # Compute power spectrum
+    fft = np.fft.fftshift(np.fft.fft(data))
+    power = np.abs(fft)**2
 
-    print(f"{label} capture complete. Data shape: {voltages.shape}")
+    print(f"{label} capture complete. Data length: {len(data)}")
     sdr.close()
-    return voltages, power
+    return data, power
+
 
 
 
