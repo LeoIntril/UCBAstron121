@@ -10,11 +10,11 @@ import matplotlib.pyplot as plt
 HI_FREQ = 1420.405751e6  # Hydrogen rest frequency [Hz]
 c = 299792458            # Speed of light [m/s]
 
-sample_rate = 1e6
 nsamples = 2**14
 nblocks = 8
 gain = 40
-freq_offset = 100e3      # LO offset for frequency switching
+sample_rate = 1e6
+freq_offset = 100e3      # LO offset
 
 T_hot = 300  # Hot load temperature [K]
 T_cold = 10  # Cold sky temperature [K]
@@ -28,55 +28,46 @@ os.makedirs(outdir, exist_ok=True)
 
 def capture(label, center_freq):
     """
-    Capture a spectrum using ugradio.sdr.capture_data().
-    Returns raw voltage data and the computed power spectrum.
+    Capture a spectrum using ugradio.sdr.SDR object.
+    Returns raw voltage data and power spectrum.
     """
     input(f"Aim horn at {label} and press Enter...")
 
-    # Capture raw data (ugradio handles SDR internally)
-    data = ugradio.sdr.capture_data(
-        nsamples=nsamples,
-        nblocks=nblocks,
-        sample_rate=sample_rate,
-        center_freq=center_freq,
-        gain=gain,
-        direct=False
-    )
+    # Initialize SDR
+    sdr = ugradio.sdr.SDR(direct=False)
+    sdr.sample_rate = sample_rate
+    sdr.gain = gain
+    sdr.center_freq = center_freq
+
+    # Capture raw data
+    data = ugradio.sdr.capture_data(sdr, nsamples=nsamples, nblocks=nblocks)
 
     # FFT and power spectrum
     fft = np.fft.fftshift(np.fft.fft(data[:nsamples]))
     power = np.abs(fft)**2
 
     print(f"{label} capture complete.")
+    sdr.close()
     return data, power
 
 ############################
-# 1️⃣ Cold Sky Calibration
-############################
-
+# 1️⃣ Cold Sky
 data_cold, spec_cold = capture("COLD SKY", HI_FREQ)
 
 ############################
-# 2️⃣ Hot Load Calibration
-############################
-
+# 2️⃣ Hot Load
 data_hot, spec_hot = capture("HOT LOAD", HI_FREQ)
 
 ############################
 # 3️⃣ Compute Y-factor and system temperature
-############################
-
 P_cold = np.mean(spec_cold)
 P_hot = np.mean(spec_hot)
 Y = P_hot / P_cold
 T_sys = (T_hot - Y*T_cold) / (Y - 1)
-
 print(f"Y-factor: {Y:.4f}, Estimated system temperature: {T_sys:.2f} K")
 
 ############################
 # 4️⃣ Hydrogen Observation
-############################
-
 data_upper, spec_upper = capture("HI TARGET UPPER LO", HI_FREQ - freq_offset)
 data_lower, spec_lower = capture("HI TARGET LOWER LO", HI_FREQ + freq_offset)
 
@@ -85,25 +76,19 @@ T_ant = T_sys * (diff_spec / P_cold)
 
 ############################
 # 5️⃣ Frequency and velocity axes
-############################
-
 freqs = np.fft.fftshift(np.fft.fftfreq(nsamples, d=1/sample_rate))
 rf_freqs = freqs + (HI_FREQ - freq_offset)  # reference to upper LO
 velocity = c * (HI_FREQ - rf_freqs) / HI_FREQ / 1000  # km/s
 
 ############################
 # 6️⃣ Metadata
-############################
-
 unix_time = ugradio.timing.unix_time()
 lat = ugradio.nch.lat
 lon = ugradio.nch.lon
 
 ############################
 # 7️⃣ Save results
-############################
-
-np.savez(os.path.join(outdir, "hi_21cm_final.npz"),
+np.savez(os.path.join(outdir, "hi_21cm_final_sdr.npz"),
          freq_Hz=rf_freqs,
          velocity_kms=velocity,
          temperature_K=T_ant,
@@ -117,8 +102,6 @@ np.savez(os.path.join(outdir, "hi_21cm_final.npz"),
          HI_rest_freq_Hz=HI_FREQ,
          lo_upper_Hz=HI_FREQ - freq_offset,
          lo_lower_Hz=HI_FREQ + freq_offset,
-         sample_rate_Hz=sample_rate,
-         gain_dB=gain,
          nsamples=nsamples,
          nblocks=nblocks,
          unix_time=unix_time,
@@ -126,12 +109,10 @@ np.savez(os.path.join(outdir, "hi_21cm_final.npz"),
          longitude_deg=lon
          )
 
-print("Observation complete. Saved to hi_21cm_final.npz")
+print("Observation complete. Saved to hi_21cm_final_sdr.npz")
 
 ############################
-# 8️⃣ Optional plotting
-############################
-
+# 8️⃣ Plot final spectrum
 plt.figure()
 plt.plot(velocity, T_ant)
 plt.xlabel("Velocity (km/s)")
