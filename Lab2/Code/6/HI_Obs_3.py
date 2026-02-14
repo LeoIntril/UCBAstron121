@@ -27,15 +27,19 @@ outdir = "data"
 os.makedirs(outdir, exist_ok=True)
 
 ############################
-# HELPER FUNCTIONS
+# HELPER FUNCTION
 ############################
 
 def capture_spectrum(label, lo_freq, n_integrations):
-    """Capture multiple blocks of data using a fresh SDR for each measurement."""
+    """
+    Capture multiple blocks using a fresh SDR for each integration.
+    Returns the averaged power spectrum.
+    """
     avg_spec = np.zeros(nsamples)
     freqs = np.fft.fftshift(np.fft.fftfreq(nsamples, d=1/sample_rate))
     rf_freqs = freqs + lo_freq
 
+    # Setup live plot
     plt.ion()
     fig, ax = plt.subplots()
     line, = ax.plot(rf_freqs/1e6, avg_spec)
@@ -44,7 +48,7 @@ def capture_spectrum(label, lo_freq, n_integrations):
     ax.set_title(label)
 
     for i in range(n_integrations):
-        # Initialize fresh SDR for each integration to avoid freezing
+        # Initialize SDR fresh to avoid freezing
         sdr = ugradio.sdr.RtlSdr()
         sdr.sample_rate = sample_rate
         sdr.gain = gain
@@ -111,7 +115,7 @@ lat = ugradio.nch.lat
 lon = ugradio.nch.lon
 
 # Save results
-np.savez(f"{outdir}/hi_21cm_single_script.npz",
+np.savez(f"{outdir}/hi_21cm_final.npz",
          freq_Hz=rf_freqs,
          velocity_kms=velocity,
          temperature_K=T_ant,
@@ -135,7 +139,7 @@ np.savez(f"{outdir}/hi_21cm_single_script.npz",
          latitude_deg=lat,
          longitude_deg=lon)
 
-print("Observation complete. Saved to hi_21cm_single_script.npz")
+print("Observation complete. Saved to hi_21cm_final.npz")
 
 # Optional: plot final calibrated spectrum
 plt.figure()
