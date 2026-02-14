@@ -35,15 +35,21 @@ def capture(label, center_freq):
     sdr.gain = gain
     sdr.center_freq = center_freq
 
-    # Capture data: shape (nblocks, samples_per_block)
+    # Capture data
     data = ugradio.sdr.capture_data(sdr, nsamples=nsamples, nblocks=nblocks)
 
-    # FFT per block, then average
-    fft_blocks = np.fft.fftshift(np.fft.fft(data, axis=-1), axes=-1)
-    power_blocks = np.abs(fft_blocks)**2
-    power = np.mean(power_blocks, axis=0)
+    # FFT & power spectrum
+    if data.ndim == 2:
+        # multiple blocks: FFT along last axis, then average
+        fft_blocks = np.fft.fftshift(np.fft.fft(data, axis=-1), axes=-1)
+        power_blocks = np.abs(fft_blocks)**2
+        power = np.mean(power_blocks, axis=0)
+    else:
+        # single block: FFT directly
+        fft = np.fft.fftshift(np.fft.fft(data))
+        power = np.abs(fft)**2
 
-    print(f"{label} capture complete.")
+    print(f"{label} capture complete. Data shape: {data.shape}")
     sdr.close()
     return data, power
 
