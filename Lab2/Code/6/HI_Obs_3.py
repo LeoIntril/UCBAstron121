@@ -27,10 +27,6 @@ os.makedirs(outdir, exist_ok=True)
 ############################
 
 def capture(label, center_freq):
-    """
-    Capture a spectrum using ugradio.sdr.SDR object.
-    Returns raw voltage data and power spectrum.
-    """
     input(f"Aim horn at {label} and press Enter...")
 
     # Initialize SDR
@@ -39,16 +35,18 @@ def capture(label, center_freq):
     sdr.gain = gain
     sdr.center_freq = center_freq
 
-    # Capture raw data
+    # Capture data: shape (nblocks, samples_per_block)
     data = ugradio.sdr.capture_data(sdr, nsamples=nsamples, nblocks=nblocks)
 
-    # FFT and power spectrum
-    fft = np.fft.fftshift(np.fft.fft(data[:nsamples]))
-    power = np.abs(fft)**2
+    # FFT per block, then average
+    fft_blocks = np.fft.fftshift(np.fft.fft(data, axis=-1), axes=-1)
+    power_blocks = np.abs(fft_blocks)**2
+    power = np.mean(power_blocks, axis=0)
 
     print(f"{label} capture complete.")
     sdr.close()
     return data, power
+
 
 ############################
 # 1️⃣ Cold Sky
