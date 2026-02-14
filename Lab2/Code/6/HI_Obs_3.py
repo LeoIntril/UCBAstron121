@@ -105,11 +105,12 @@ async def integrate(lo_freq, n_integrations, label):
 async def main():
 
     print("\n=== INTENSITY CALIBRATION ===")
-    input("Aim horn at COLD SKY and press Enter…")
+    await asyncio.to_thread(input, "Aim horn at COLD SKY and press Enter…")
     s_cold = await integrate(HI_FREQ, n_cal_integrations, "Cold Sky")
 
-    input("Place HOT Load in front of horn and press Enter…")
+    await asyncio.to_thread(input, "Place HOT Load in front of horn and press Enter…")
     s_hot = await integrate(HI_FREQ, n_cal_integrations, "Hot Load")
+
 
     P_cold = np.mean(s_cold)
     P_hot = np.mean(s_hot)
