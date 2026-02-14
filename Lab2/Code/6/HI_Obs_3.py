@@ -8,8 +8,8 @@ import asyncio
 # CONFIGURATION
 ############################
 
-HI_FREQ = 1420.405751e6      # Hydrogen rest frequency (Hz)
-c = 299792458                # Speed of light (m/s)
+HI_FREQ = 1420.405751e6
+c = 299792458
 
 sample_rate = 1e6
 nsamples = 2**14
@@ -28,25 +28,11 @@ outdir = "data"
 os.makedirs(outdir, exist_ok=True)
 
 ############################
-# SETUP SDR
+# HELPER FUNCTIONS
 ############################
 
-sdr = ugradio.sdr.RtlSdr()
-sdr.sample_rate = sample_rate
-sdr.gain = gain
-sdr.direct = False
-
-print("SDR configured")
-
-############################
-# ASYNC STREAM READER
-############################
-
-async def capture_samples(num_buffers):
-    """
-    Async capture returning a concatenated array of samples.
-    num_buffers = number of SDR buffers to capture
-    """
+async def capture_samples(sdr, num_buffers=1):
+    """Async capture returning concatenated array of samples"""
     samples = []
     async for buf in sdr.stream():
         samples.append(buf)
@@ -55,11 +41,8 @@ async def capture_samples(num_buffers):
             break
     return np.concatenate(samples, axis=0)
 
-############################
-# INTEGRATE SPECTRUM WITH LIVE PLOT
-############################
-
 async def integrate(lo_freq, n_integrations, label):
+    """Integrate spectrum with live plot for a given LO frequency"""
     avg_spec = np.zeros(nsamples)
 
     plt.ion()
@@ -72,11 +55,19 @@ async def integrate(lo_freq, n_integrations, label):
     ax.set_title(label)
 
     for i in range(n_integrations):
-        data = await capture_samples(1)  # capture 1 buffer per integration
-        if len(data) < nsamples:
-            continue  # wait until enough samples
+        # Capture new SDR object for each integration to avoid frozen stream
+        sdr = ugradio.sdr.RtlSdr()
+        sdr.sample_rate = sample_rate
+        sdr.gain = gain
+        sdr.direct = False
+        sdr.center_freq = lo_freq
 
-        # FFT
+        data = await capture_samples(sdr, 1)
+        sdr.close()  # close immediately
+
+        if len(data) < nsamples:
+            continue
+
         fft = np.fft.fftshift(np.fft.fft(data[:nsamples]))
         power = np.abs(fft)**2
         avg_spec += power
@@ -94,79 +85,77 @@ async def integrate(lo_freq, n_integrations, label):
     return avg_spec / n_integrations
 
 ############################
-# MAIN OBSERVATION FLOW
+# MAIN FLOW
 ############################
 
 async def main():
-    print("\n=== INTENSITY CALIBRATION ===")
-    await asyncio.to_thread(input, "Aim horn at COLD SKY and press Enter…")
-    s_cold = await integrate(HI_FREQ, n_cal_integrations, "Cold Sky")
+    try:
+        print("\n=== INTENSITY CALIBRATION ===")
+        await asyncio.to_thread(input, "Aim horn at COLD SKY and press Enter…")
+        s_cold = await integrate(HI_FREQ, n_cal_integrations, "Cold Sky")
 
-    await asyncio.to_thread(input, "Place HOT Load in front of horn and press Enter…")
-    s_hot = await integrate(HI_FREQ, n_cal_integrations, "Hot Load")
+        await asyncio.to_thread(input, "Place HOT Load in front of horn and press Enter…")
+        s_hot = await integrate(HI_FREQ, n_cal_integrations, "Hot Load")
 
-    P_cold = np.mean(s_cold)
-    P_hot = np.mean(s_hot)
-    Y = P_hot / P_cold
-    T_sys = (T_hot - Y*T_cold) / (Y - 1)
-    print(f"\nY-factor: {Y:.4f}, System temperature: {T_sys:.2f} K")
+        P_cold = np.mean(s_cold)
+        P_hot = np.mean(s_hot)
+        Y = P_hot / P_cold
+        T_sys = (T_hot - Y*T_cold) / (Y - 1)
+        print(f"\nY-factor: {Y:.4f}, System temperature: {T_sys:.2f} K")
 
-    await asyncio.to_thread(input, "\nAim horn at target and press Enter…")
+        await asyncio.to_thread(input, "\nAim horn at target and press Enter…")
 
-    lo_upper = HI_FREQ - freq_offset
-    lo_lower = HI_FREQ + freq_offset
+        lo_upper = HI_FREQ - freq_offset
+        lo_lower = HI_FREQ + freq_offset
 
-    spec_upper = await integrate(lo_upper, n_obs_integrations, "HI Upper LO")
-    spec_lower = await integrate(lo_lower, n_obs_integrations, "HI Lower LO")
+        spec_upper = await integrate(lo_upper, n_obs_integrations, "HI Upper LO")
+        spec_lower = await integrate(lo_lower, n_obs_integrations, "HI Lower LO")
 
-    diff_spec = spec_upper - spec_lower
-    T_ant = T_sys * (diff_spec / P_cold)
+        diff_spec = spec_upper - spec_lower
+        T_ant = T_sys * (diff_spec / P_cold)
 
-    freqs = np.fft.fftshift(np.fft.fftfreq(nsamples, d=1/sample_rate))
-    rf_freqs = freqs + lo_upper
-    velocity = c * (HI_FREQ - rf_freqs) / HI_FREQ / 1000
+        freqs = np.fft.fftshift(np.fft.fftfreq(nsamples, d=1/sample_rate))
+        rf_freqs = freqs + lo_upper
+        velocity = c * (HI_FREQ - rf_freqs) / HI_FREQ / 1000
 
-    unix_time = ugradio.timing.unix_time()
-    lat = ugradio.nch.lat
-    lon = ugradio.nch.lon
+        unix_time = ugradio.timing.unix_time()
+        lat = ugradio.nch.lat
+        lon = ugradio.nch.lon
 
-    np.savez(
-        f"{outdir}/hi_ugradio_async_safe.npz",
-        freq_Hz=rf_freqs,
-        velocity_kms=velocity,
-        temperature_K=T_ant,
-        s_cold=s_cold,
-        s_hot=s_hot,
-        spec_upper=spec_upper,
-        spec_lower=spec_lower,
-        diff_spec=diff_spec,
-        T_sys_K=T_sys,
-        Y_factor=Y,
-        HI_rest_freq_Hz=HI_FREQ,
-        lo_upper_Hz=lo_upper,
-        lo_lower_Hz=lo_lower,
-        sample_rate_Hz=sample_rate,
-        gain_dB=gain,
-        nsamples=nsamples,
-        nblocks=nblocks,
-        n_cal_integrations=n_cal_integrations,
-        n_obs_integrations=n_obs_integrations,
-        unix_time=unix_time,
-        latitude_deg=lat,
-        longitude_deg=lon
-    )
+        np.savez(
+            f"{outdir}/hi_ugradio_reinit.npz",
+            freq_Hz=rf_freqs,
+            velocity_kms=velocity,
+            temperature_K=T_ant,
+            s_cold=s_cold,
+            s_hot=s_hot,
+            spec_upper=spec_upper,
+            spec_lower=spec_lower,
+            diff_spec=diff_spec,
+            T_sys_K=T_sys,
+            Y_factor=Y,
+            HI_rest_freq_Hz=HI_FREQ,
+            lo_upper_Hz=lo_upper,
+            lo_lower_Hz=lo_lower,
+            sample_rate_Hz=sample_rate,
+            gain_dB=gain,
+            nsamples=nsamples,
+            nblocks=nblocks,
+            n_cal_integrations=n_cal_integrations,
+            n_obs_integrations=n_obs_integrations,
+            unix_time=unix_time,
+            latitude_deg=lat,
+            longitude_deg=lon
+        )
 
-    print("\nObservation complete.")
-    print(f"Saved to {outdir}/hi_ugradio_async_safe.npz")
+        print("\nObservation complete.")
+        print(f"Saved to {outdir}/hi_ugradio_reinit.npz")
+
+    except KeyboardInterrupt:
+        print("\nUser interrupted!")
 
 ############################
-# RUN WITH SAFE INTERRUPT HANDLING
+# RUN
 ############################
 
-try:
-    asyncio.run(main())
-except KeyboardInterrupt:
-    print("\nUser interrupted!")
-finally:
-    sdr.close()
-    print("SDR closed. Exiting safely.")
+asyncio.run(main())
