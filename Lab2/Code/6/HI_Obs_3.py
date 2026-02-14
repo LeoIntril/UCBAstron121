@@ -35,11 +35,23 @@ def capture(label, center_freq):
     sdr.gain = gain
     sdr.center_freq = center_freq
 
-    # Capture data (dict)
+    # Capture data
     result = ugradio.sdr.capture_data(sdr, nsamples=nsamples, nblocks=nblocks)
 
-    # Extract voltage array
-    voltages = np.array(result['data'], dtype=np.complex64).flatten()
+    # Handle different return types
+    if isinstance(result, dict):
+        # Some backends return dict, try 'data' key first, fallback to 'samples'
+        if 'data' in result:
+            voltages = np.array(result['data'], dtype=np.complex64).flatten()
+        elif 'samples' in result:
+            voltages = np.array(result['samples'], dtype=np.complex64).flatten()
+        else:
+            # Take first dict value if only one numeric entry exists
+            first_array = next(v for v in result.values() if isinstance(v, (list, np.ndarray)))
+            voltages = np.array(first_array, dtype=np.complex64).flatten()
+    else:
+        # Result is already numeric array/list
+        voltages = np.array(result, dtype=np.complex64).flatten()
 
     # FFT and power spectrum
     fft = np.fft.fftshift(np.fft.fft(voltages))
