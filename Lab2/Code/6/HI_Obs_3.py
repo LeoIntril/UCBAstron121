@@ -36,22 +36,22 @@ def capture(label, center_freq):
     sdr.center_freq = center_freq
 
     # Capture data
-    data = ugradio.sdr.capture_data(sdr, nsamples=nsamples, nblocks=nblocks)
+    result = ugradio.sdr.capture_data(sdr, nsamples=nsamples, nblocks=nblocks)
+    voltages = result['samples']  # extract the raw voltage array
 
     # FFT & power spectrum
-    if data.ndim == 2:
-        # multiple blocks: FFT along last axis, then average
-        fft_blocks = np.fft.fftshift(np.fft.fft(data, axis=-1), axes=-1)
+    if voltages.ndim == 2:
+        fft_blocks = np.fft.fftshift(np.fft.fft(voltages, axis=-1), axes=-1)
         power_blocks = np.abs(fft_blocks)**2
         power = np.mean(power_blocks, axis=0)
     else:
-        # single block: FFT directly
-        fft = np.fft.fftshift(np.fft.fft(data))
+        fft = np.fft.fftshift(np.fft.fft(voltages))
         power = np.abs(fft)**2
 
-    print(f"{label} capture complete. Data shape: {data.shape}")
+    print(f"{label} capture complete. Data shape: {voltages.shape}")
     sdr.close()
-    return data, power
+    return voltages, power
+
 
 
 ############################
