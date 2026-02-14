@@ -29,19 +29,26 @@ os.makedirs(outdir, exist_ok=True)
 def capture(label, center_freq):
     input(f"Aim horn at {label} and press Enter...")
 
+    # Initialize SDR
     sdr = ugradio.sdr.SDR(direct=False)
     sdr.sample_rate = sample_rate
     sdr.gain = gain
     sdr.center_freq = center_freq
 
+    # Capture data (1D or 2D)
     data = ugradio.sdr.capture_data(sdr, nsamples=nsamples, nblocks=nblocks)
 
-    fft = np.fft.fftshift(np.fft.fft(data))  # 1D FFT
+    # Ensure it's a 1D NumPy array
+    data = np.asarray(data).flatten()
+
+    # FFT and power spectrum
+    fft = np.fft.fftshift(np.fft.fft(data))
     power = np.abs(fft)**2
 
     print(f"{label} capture complete. Data length: {len(data)}")
     sdr.close()
     return data, power
+
 
 
 ############################
