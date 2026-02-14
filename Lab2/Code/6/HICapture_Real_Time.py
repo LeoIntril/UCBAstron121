@@ -1,8 +1,7 @@
 import numpy as np
 import ugradio
 from rtlsdr import RtlSdr
-import matplotlib.pyplot as plt
-import time
+import os
 
 ############################
 # CONFIGURATION
@@ -15,8 +14,14 @@ nblocks = 8
 gain = 40
 freq_offset = 100e3
 
-update_interval = 10   # updates before plot refresh
-smooth_width = 7
+n_cal_integrations = 50
+n_obs_integrations = 300
+
+T_hot = 300
+T_cold = 10
+
+outdir = "data"
+os.makedirs(outdir, exist_ok=True)
 
 ############################
 # SETUP SDR
@@ -27,74 +32,126 @@ sdr.sample_rate = sample_rate
 sdr.gain = gain
 
 ############################
+# INTEGRATION FUNCTION
+############################
+
+def integrate_spectrum(lo_freq, n_integrations):
+
+    sdr.center_freq = lo_freq
+    avg_spec = np.zeros(nsamples)
+
+    for i in range(n_integrations):
+
+        data = ugradio.sdr.capture_data(
+            sdr,
+            nsamples=nsamples,
+            nblocks=nblocks
+        )
+
+        fft = np.fft.fftshift(np.fft.fft(data, axis=-1), axes=-1)
+        power = np.abs(fft)**2
+        spec = np.mean(power, axis=0)
+
+        avg_spec += spec
+
+    return avg_spec / n_integrations
+
+############################
+# ===== CALIBRATION =====
+############################
+
+print("\n=== INTENSITY CALIBRATION ===")
+
+input("Aim horn at COLD SKY and press Enter...")
+s_cold = integrate_spectrum(HI_FREQ, n_cal_integrations)
+
+input("Place HOT blackbody in front of horn and press Enter...")
+s_hot = integrate_spectrum(HI_FREQ, n_cal_integrations)
+
+P_cold = np.mean(s_cold)
+P_hot = np.mean(s_hot)
+
+Y = P_hot / P_cold
+T_sys = (T_hot - Y*T_cold) / (Y - 1)
+
+print(f"Y-factor: {Y:.3f}")
+print(f"System temperature: {T_sys:.2f} K")
+
+############################
+# ===== HYDROGEN OBS =====
+############################
+
+input("Aim horn at target and press Enter...")
+
+lo_upper = HI_FREQ - freq_offset
+lo_lower = HI_FREQ + freq_offset
+
+spec_upper = integrate_spectrum(lo_upper, n_obs_integrations)
+spec_lower = integrate_spectrum(lo_lower, n_obs_integrations)
+
+diff_spec = spec_upper - spec_lower
+
+T_ant = T_sys * (diff_spec / P_cold)
+
+############################
 # FREQUENCY AXIS
 ############################
 
 freqs = np.fft.fftshift(
     np.fft.fftfreq(nsamples, d=1/sample_rate)
 )
+rf_freqs = freqs + lo_upper
 
 ############################
-# HELPERS
+# ===== METADATA COLLECTION =====
 ############################
 
-def capture_once(lo_freq):
-    sdr.center_freq = lo_freq
-    data = ugradio.sdr.capture_data(
-        sdr,
-        nsamples=nsamples,
-        nblocks=nblocks
-    )
+# Time
+unix_time = ugradio.timing.unix_time()
 
-    fft = np.fft.fftshift(np.fft.fft(data, axis=-1), axes=-1)
-    power = np.abs(fft)**2
-    return np.mean(power, axis=0)
-
-
-def smooth(spec, width):
-    return np.convolve(spec, np.ones(width)/width, mode='same')
+# Observatory location
+lat, lon = ugradio.nch.lat, ugradio.nch.lon
 
 ############################
-# LIVE LOOP
+# SAVE EVERYTHING
 ############################
 
-lo_upper = HI_FREQ - freq_offset
-lo_lower = HI_FREQ + freq_offset
+np.savez(
+    f"{outdir}/hi_calibrated_metadata.npz",
 
-avg_upper = np.zeros(nsamples)
-avg_lower = np.zeros(nsamples)
+    # Spectral Data
+    freq_Hz=rf_freqs,
+    temperature_K=T_ant,
+    diff_power=diff_spec,
+    spec_upper=spec_upper,
+    spec_lower=spec_lower,
+    s_cold=s_cold,
+    s_hot=s_hot,
 
-count = 0
+    # Calibration
+    T_sys_K=T_sys,
+    Y_factor=Y,
+    T_hot_K=T_hot,
+    T_cold_K=T_cold,
 
-plt.ion()
-fig, ax = plt.subplots()
-line, = ax.plot([], [])
-ax.set_xlabel("Frequency (MHz)")
-ax.set_ylabel("Power (arb)")
-ax.set_title("Live Hydrogen 21-cm Detection")
+    # Instrument Settings
+    HI_rest_freq_Hz=HI_FREQ,
+    lo_upper_Hz=lo_upper,
+    lo_lower_Hz=lo_lower,
+    sample_rate_Hz=sample_rate,
+    gain_dB=gain,
+    nsamples=nsamples,
+    nblocks=nblocks,
+    n_cal_integrations=n_cal_integrations,
+    n_obs_integrations=n_obs_integrations,
 
-while True:
+    # Observatory Metadata
+    unix_time=unix_time,
+    latitude_deg=lat,
+    longitude_deg=lon
+)
 
-    spec_u = capture_once(lo_upper)
-    spec_l = capture_once(lo_lower)
+print("\nObservation complete.")
+print("Saved to data/hi_calibrated_metadata.npz")
 
-    avg_upper += spec_u
-    avg_lower += spec_l
-    count += 1
-
-    if count % update_interval == 0:
-
-        diff = (avg_upper - avg_lower) / count
-        diff = smooth(diff, smooth_width)
-
-        rf_freqs = freqs + lo_upper
-
-        line.set_xdata(rf_freqs / 1e6)
-        line.set_ydata(diff)
-
-        ax.relim()
-        ax.autoscale_view()
-        plt.pause(0.01)
-
-        print(f"Integrated {count} cycles")
-
+sdr.close()
