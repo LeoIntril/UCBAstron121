@@ -28,7 +28,7 @@ outdir = "data"
 os.makedirs(outdir, exist_ok=True)
 
 ############################
-# SETUP SDR (ugradio only)
+# SETUP SDR
 ############################
 
 sdr = ugradio.sdr.RtlSdr()
@@ -43,15 +43,26 @@ print(f"  Gain: {gain} dB")
 print("  Direct sampling (direct = False) confirmed")
 
 ############################
+# HELPER FUNCTION TO CONVERT CAPTURE TO NUMPY
+############################
+
+def capture_to_array(sdr, nsamples, nblocks):
+    """
+    Convert the rtlsdraio object returned by capture_data() into a NumPy array.
+    """
+    raw = ugradio.sdr.capture_data(sdr, nsamples=nsamples, nblocks=nblocks)
+    # latest ugradio object can be iterated block by block
+    data = np.array([block for block in raw])
+    return data
+
+############################
 # INTEGRATION FUNCTION WITH LIVE PLOT
 ############################
 
 def integrate_spectrum_live(lo_freq, n_integrations, label="Spectrum"):
-    """Integrate and show live plot."""
     sdr.center_freq = lo_freq
     avg_spec = np.zeros(nsamples)
 
-    # Prepare matplotlib interactive plot
     plt.ion()
     fig, ax = plt.subplots()
     freqs = np.fft.fftshift(np.fft.fftfreq(nsamples, d=1/sample_rate))
@@ -62,7 +73,8 @@ def integrate_spectrum_live(lo_freq, n_integrations, label="Spectrum"):
     ax.set_title(label)
 
     for i in range(n_integrations):
-        data = ugradio.sdr.capture_data(sdr, nsamples=nsamples, nblocks=nblocks)
+        data = capture_to_array(sdr, nsamples, nblocks)
+        # FFT along last axis
         fft = np.fft.fftshift(np.fft.fft(data, axis=-1), axes=-1)
         power = np.abs(fft)**2
         spec = np.mean(power, axis=0)
