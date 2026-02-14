@@ -47,18 +47,24 @@ def integrate_spectrum(lo_freq, n_integrations):
 
     for i in range(n_integrations):
 
-        freqs, spec = ugradio.sdr.get_spectrum(
+        data = ugradio.sdr.capture_data(
             sdr,
             nsamples=nsamples,
             nblocks=nblocks
         )
 
+        fft = np.fft.fftshift(
+            np.fft.fft(data, axis=-1),
+            axes=-1
+        )
+
+        power = np.abs(fft)**2
+        spec = np.mean(power, axis=0)
+
         avg_spec += spec
 
-        if (i+1) % 20 == 0:
-            print(f"  {i+1}/{n_integrations} integrations")
+    return avg_spec / n_integrations
 
-    return freqs, avg_spec / n_integrations
 
 ############################
 # ===== INTENSITY CALIBRATION =====
