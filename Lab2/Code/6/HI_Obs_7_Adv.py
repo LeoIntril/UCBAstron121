@@ -89,6 +89,8 @@ sdr = ugradio.sdr.SDR(direct=False)
 sdr.sample_rate = sample_rate
 sdr.gain = gain
 
+input(f"Aim horn at HI target and press Enter for {label}...")
+
 # Loop over nblocks_obs, alternating LO each block
 for i in range(nblocks_obs):
     if i % 2 == 0:
@@ -99,8 +101,6 @@ for i in range(nblocks_obs):
         # Lower LO = on-line
         sdr.center_freq = HI_FREQ + freq_offset
         label = f"HI TARGET Lower LO, block {i+1}"
-
-    input(f"Aim horn at HI target and press Enter for {label}...")
 
     # Capture raw voltages
     result = ugradio.sdr.capture_data(sdr, nsamples=nsamples, nblocks=1)
