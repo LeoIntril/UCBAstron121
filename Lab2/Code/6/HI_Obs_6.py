@@ -59,12 +59,12 @@ def capture(label, center_freq, nblocks):
     return voltages, power
 
 ############################
-# 1️⃣ Cold Sky Calibration
+# 1 Cold Sky Calibration
 ############################
 data_cold, spec_cold = capture("COLD SKY", HI_FREQ, nblocks=nblocks_cal)
 
 ############################
-# 2️⃣ Hot Load Calibration
+# 2 Hot Load Calibration
 ############################
 data_hot, spec_hot = capture("HOT LOAD", HI_FREQ, nblocks=nblocks_cal)
 
@@ -76,7 +76,7 @@ T_sys = (T_hot - Y*T_cold) / (Y - 1)
 print(f"Y-factor: {Y:.4f}, Estimated system temperature: {T_sys:.2f} K")
 
 ############################
-# 3️⃣ Hydrogen Observation (long integration)
+# 3 Hydrogen Observation (long integration)
 ############################
 data_upper, spec_upper = capture("HI TARGET UPPER LO", HI_FREQ - freq_offset, nblocks=nblocks_obs)
 data_lower, spec_lower = capture("HI TARGET LOWER LO", HI_FREQ + freq_offset, nblocks=nblocks_obs)
