@@ -130,24 +130,6 @@ lower_blocks_power = np.array(lower_blocks_power)
 spec_upper_avg = np.mean(upper_blocks_power, axis=0)
 spec_lower_avg = np.mean(lower_blocks_power, axis=0)
 
-# --- Save everything ---
-np.savez(os.path.join(outdir, "hi_21cm_freqswitch_raw_power.npz"),
-         upper_volt=upper_blocks_volt,
-         upper_power=upper_blocks_power,
-         lower_volt=lower_blocks_volt,
-         lower_power=lower_blocks_power,
-         spec_upper_avg=spec_upper_avg,
-         spec_lower_avg=spec_lower_avg,
-         nsamples=nsamples,
-         nblocks_obs=nblocks_obs,
-         HI_rest_freq_Hz=HI_FREQ,
-         lo_upper_Hz=HI_FREQ - freq_offset,
-         lo_lower_Hz=HI_FREQ + freq_offset
-         )
-
-print("Observation complete. Raw voltages + power spectra saved.")
-
-
 # --- Build baseband frequency axis ---
 len_fft = len(spec_upper_avg)
 freqs = np.fft.fftshift(np.fft.fftfreq(len_fft, d=1/sample_rate))  # Hz
