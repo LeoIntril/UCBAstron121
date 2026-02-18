@@ -86,7 +86,7 @@ diff_spec = spec_upper - spec_lower
 T_ant = T_sys * (diff_spec / P_cold)
 
 ############################
-# 4️⃣ Frequency and velocity axes
+# 4 Frequency and velocity axes
 ############################
 len_fft = len(T_ant)
 freqs = np.fft.fftshift(np.fft.fftfreq(len_fft, d=1/sample_rate))
@@ -94,14 +94,14 @@ rf_freqs = freqs + (HI_FREQ - freq_offset)  # reference to upper LO
 velocity = c * (HI_FREQ - rf_freqs) / HI_FREQ / 1000  # km/s
 
 ############################
-# 5️⃣ Metadata
+# 5 Metadata
 ############################
 unix_time = ugradio.timing.unix_time()
 lat = ugradio.nch.lat
 lon = ugradio.nch.lon
 
 ############################
-# 6️⃣ Save results
+# 6 Save results
 ############################
 np.savez(os.path.join(outdir, "hi_21cm_final_sdr_longint.npz"),
          freq_Hz=rf_freqs,
@@ -128,7 +128,7 @@ np.savez(os.path.join(outdir, "hi_21cm_final_sdr_longint.npz"),
 print("Observation complete. Saved to hi_21cm_final_sdr_longint.npz")
 
 ############################
-# 7️⃣ Plot final spectrum
+# 7 Plot final spectrum
 plt.figure()
 plt.plot(velocity, T_ant)
 plt.xlabel("Velocity (km/s)")
