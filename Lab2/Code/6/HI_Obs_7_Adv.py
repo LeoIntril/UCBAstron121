@@ -172,6 +172,7 @@ np.savez(os.path.join(outdir, "hi_21cm_final_sdr_longint_freqswitch.npz"),
          temperature_K=T_ant,
          s_cold=spec_cold,
          s_hot=spec_hot,
+         upper_volt=upper_blocks_volt
          upper_power=upper_blocks_power,
          lower_volt=lower_blocks_volt,
          lower_power=lower_blocks_power,
