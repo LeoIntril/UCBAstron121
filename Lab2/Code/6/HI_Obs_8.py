@@ -133,7 +133,12 @@ for i in range(nblocks_obs):
     # Safely handle different return formats
     if isinstance(result, dict):
         if 'data' in result:
-            voltages = np.array(result['data'], dtype=np.complex64)
+            raw = np.array(result['data'], dtype=np.float32)
+
+            # Convert interleaved I/Q to complex
+            I = raw[0::2]
+            Q = raw[1::2]
+            voltages = I + 1j * Q
         elif 'samples' in result:
             voltages = np.array(result['samples'], dtype=np.complex64)
         else:
