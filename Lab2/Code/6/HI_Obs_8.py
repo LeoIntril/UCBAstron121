@@ -28,7 +28,7 @@ os.makedirs(outdir, exist_ok=True)
 ############################
 
 def capture(label, center_freq, nblocks):
-    """Capture voltages and power spectrum with ugradio SDR."""
+    """Capture voltages and averaged power spectrum with ugradio SDR."""
     input(f"Aim horn at {label} and press Enter...")
 
     sdr = ugradio.sdr.SDR(direct=False)
@@ -38,24 +38,37 @@ def capture(label, center_freq, nblocks):
 
     result = ugradio.sdr.capture_data(sdr, nsamples=nsamples, nblocks=nblocks)
 
-    # Handle different return types safely
+    # ---- Safely extract complex voltages ----
     if isinstance(result, dict):
         if 'data' in result:
-            voltages = np.array(result['data'], dtype=np.complex64).flatten()
+            voltages = np.array(result['data'], dtype=np.complex64)
         elif 'samples' in result:
-            voltages = np.array(result['samples'], dtype=np.complex64).flatten()
+            voltages = np.array(result['samples'], dtype=np.complex64)
         else:
-            first_array = next(v for v in result.values() if isinstance(v, (list, np.ndarray)))
-            voltages = np.array(first_array, dtype=np.complex64).flatten()
+            first_array = next(
+                v for v in result.values()
+                if isinstance(v, (list, np.ndarray))
+            )
+            voltages = np.array(first_array, dtype=np.complex64)
     else:
-        voltages = np.array(result, dtype=np.complex64).flatten()
+        voltages = np.array(result, dtype=np.complex64)
 
-    # FFT and power spectrum
-    fft = np.fft.fftshift(np.fft.fft(voltages))
-    power = np.abs(fft)**2
+    # ---- Ensure proper block structure ----
+    voltages = voltages.reshape(nblocks, nsamples)
 
-    print(f"{label} capture complete. Data length: {len(voltages)}")
+    # ---- Compute averaged power spectrum (Welch-style) ----
+    power_blocks = []
+
+    for block in voltages:
+        fft = np.fft.fft(block)
+        power_blocks.append(np.abs(fft)**2)
+
+    power = np.mean(power_blocks, axis=0)
+    power = np.fft.fftshift(power)
+
+    print(f"{label} capture complete. Blocks: {nblocks}, Samples/block: {nsamples}")
     sdr.close()
+
     return voltages, power
 
 ############################
@@ -99,13 +112,13 @@ input("Aim horn at HI target and press Enter to begin frequency-switched observa
 for i in range(nblocks_obs):
 
     if i % 2 == 0:
-        # Upper LO
         sdr.center_freq = HI_FREQ - freq_offset
         current_label = f"HI TARGET Upper LO, block {i+1}"
+        is_upper = True
     else:
-        # Lower LO
         sdr.center_freq = HI_FREQ + freq_offset
         current_label = f"HI TARGET Lower LO, block {i+1}"
+        is_upper = False
 
     print(f"Capturing {current_label}")
 
@@ -115,9 +128,9 @@ for i in range(nblocks_obs):
     # Safely handle different return formats
     if isinstance(result, dict):
         if 'data' in result:
-            voltages = np.array(result['data'], dtype=np.complex64).flatten()
+            voltages = np.array(result['data'], dtype=np.complex64)
         elif 'samples' in result:
-            voltages = np.array(result['samples'], dtype=np.complex64).flatten()
+            voltages = np.array(result['samples'], dtype=np.complex64)
         else:
             first_array = next(
                 v for v in result.values()
@@ -125,19 +138,22 @@ for i in range(nblocks_obs):
             )
             voltages = np.array(first_array, dtype=np.complex64).flatten()
     else:
-        voltages = np.array(result, dtype=np.complex64).flatten()
+        voltages = np.array(result, dtype=np.complex64)
 
+    voltages = voltages.reshape(1, nsamples)
+    
     # Compute power spectrum
-    fft = np.fft.fftshift(np.fft.fft(voltages))
-    power = np.abs(fft)**2
+    fft_block = np.fft.fft(voltages[0])
+    power_block = np.abs(fft_block)**2
+    power_block = np.fft.fftshift(power_block)
 
-    # Save both voltages and power in correct LO list
-    if i % 2 == 0:
-        upper_blocks_volt.append(voltages)
-        upper_blocks_power.append(power)
+    # Store
+    if is_upper:
+        upper_blocks_volt.append(raw[0])
+        upper_blocks_power.append(power_block)
     else:
-        lower_blocks_volt.append(voltages)
-        lower_blocks_power.append(power)
+        lower_blocks_volt.append(raw[0])
+        lower_blocks_power.append(power_block)
 
 sdr.close()
 
