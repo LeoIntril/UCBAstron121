@@ -27,8 +27,13 @@ os.makedirs(outdir, exist_ok=True)
 # HELPER FUNCTION
 ############################
 
-def capture(label, center_freq, nblocks):
-    """Capture voltages and averaged power spectrum with ugradio SDR."""
+def capture(label, center_freq, nblocks=1, return_blocks=False):
+    """
+    Capture voltages and power spectrum with ugradio SDR.
+    
+    If return_blocks=True, returns an array of shape (nblocks, nsamples)
+    without averaging, suitable for frequency switching.
+    """
     input(f"Aim horn at {label} and press Enter...")
 
     sdr = ugradio.sdr.SDR(direct=False)
@@ -38,43 +43,41 @@ def capture(label, center_freq, nblocks):
 
     result = ugradio.sdr.capture_data(sdr, nsamples=nsamples, nblocks=nblocks)
 
-    # ---- Safely extract complex voltages ----
+    # Extract voltages robustly (same as before)
     if isinstance(result, dict):
-        if 'data' in result:
-            raw = np.array(result['data'], dtype=np.float32)
-
-            # Convert interleaved I/Q to complex
+        if 'samples' in result:
+            voltages = np.array(result['samples'])
+        elif 'data' in result:
+            raw = np.array(result['data'], dtype=np.float32).flatten()
             I = raw[0::2]
             Q = raw[1::2]
-            voltages = I + 1j * Q
-        elif 'samples' in result:
-            voltages = np.array(result['samples'], dtype=np.complex64)
+            voltages = I + 1j*Q
         else:
-            first_array = next(
-                v for v in result.values()
-                if isinstance(v, (list, np.ndarray))
-            )
+            first_array = next(v for v in result.values() if isinstance(v, (list, np.ndarray)))
             voltages = np.array(first_array, dtype=np.complex64)
     else:
         voltages = np.array(result, dtype=np.complex64)
 
-    # ---- Ensure proper block structure ----
-    voltages = voltages.reshape(nblocks, nsamples)
+    # Ensure shape
+    if voltages.ndim == 1:
+        voltages = voltages.reshape(nblocks, nsamples)
+    elif voltages.shape != (nblocks, nsamples):
+        voltages = voltages.flatten()
+        voltages = voltages.reshape(nblocks, nsamples)
 
-    # ---- Compute averaged power spectrum (Welch-style) ----
-    power_blocks = []
-
-    for block in voltages:
-        fft = np.fft.fft(block)
-        power_blocks.append(np.abs(fft)**2)
-
-    power = np.mean(power_blocks, axis=0)
-    power = np.fft.fftshift(power)
-
-    print(f"{label} capture complete. Blocks: {nblocks}, Samples/block: {nsamples}")
-    sdr.close()
-
-    return voltages, power
+    # Compute averaged power only if requested
+    if return_blocks:
+        # Return raw blocks, each FFT can be computed later
+        sdr.close()
+        return voltages
+    else:
+        power_blocks = []
+        for block in voltages:
+            fft_block = np.fft.fft(block)
+            power_blocks.append(np.abs(np.fft.fftshift(fft_block))**2)
+        power = np.mean(power_blocks, axis=0)
+        sdr.close()
+        return voltages, power
 
 ############################
 # 1 Cold Sky Calibration
@@ -101,7 +104,7 @@ print(f"Y-factor: {Y:.4f}, Estimated system temperature: {T_sys:.2f} K")
 # 3 Hydrogen Observation with Frequency Switching (Save raw + power)
 ############################
 
-# Prepare lists to store block data
+# --- Prepare lists to store block data ---
 upper_blocks_volt = []   # raw complex voltages
 upper_blocks_power = []  # power spectra
 lower_blocks_volt = []
@@ -113,60 +116,35 @@ sdr.gain = gain
 
 input("Aim horn at HI target and press Enter to begin frequency-switched observation...")
 
-# Loop over nblocks_obs, alternating LO each block
 for i in range(nblocks_obs):
-
+    # Alternate LO
     if i % 2 == 0:
-        sdr.center_freq = HI_FREQ - freq_offset
+        center_freq = HI_FREQ - freq_offset  # upper LO = on-line
         current_label = f"HI TARGET Upper LO, block {i+1}"
         is_upper = True
     else:
-        sdr.center_freq = HI_FREQ + freq_offset
+        center_freq = HI_FREQ + freq_offset  # lower LO = off-line
         current_label = f"HI TARGET Lower LO, block {i+1}"
         is_upper = False
 
     print(f"Capturing {current_label}")
 
-    # Capture raw voltages
-    result = ugradio.sdr.capture_data(sdr, nsamples=nsamples, nblocks=1)
+    # --- Capture one raw block, preserving block-level voltages ---
+    voltages_block = capture(current_label, center_freq, nblocks=1, return_blocks=True)
 
-    # Safely handle different return formats
-    if isinstance(result, dict):
-        if 'data' in result:
-            raw = np.array(result['data'], dtype=np.float32)
+    # --- Compute FFT + power spectrum for this block ---
+    fft_block = np.fft.fft(voltages_block[0])
+    power_block = np.abs(np.fft.fftshift(fft_block))**2
 
-            # Convert interleaved I/Q to complex
-            I = raw[0::2]
-            Q = raw[1::2]
-            voltages = I + 1j * Q
-        elif 'samples' in result:
-            voltages = np.array(result['samples'], dtype=np.complex64)
-        else:
-            first_array = next(
-                v for v in result.values()
-                if isinstance(v, (list, np.ndarray))
-            )
-            voltages = np.array(first_array, dtype=np.complex64).flatten()
-    else:
-        voltages = np.array(result, dtype=np.complex64)
-
-    voltages = voltages.reshape(1, nsamples)
-    
-    # Compute power spectrum
-    fft_block = np.fft.fft(voltages[0])
-    power_block = np.abs(fft_block)**2
-    power_block = np.fft.fftshift(power_block)
-
-    # Store
+    # --- Store raw voltages and power ---
     if is_upper:
-        upper_blocks_volt.append(raw[0])
+        upper_blocks_volt.append(voltages_block[0])
         upper_blocks_power.append(power_block)
     else:
-        lower_blocks_volt.append(raw[0])
+        lower_blocks_volt.append(voltages_block[0])
         lower_blocks_power.append(power_block)
 
 sdr.close()
-
 
 # --- Convert lists to arrays ---
 upper_blocks_volt = np.array(upper_blocks_volt)
@@ -174,7 +152,7 @@ upper_blocks_power = np.array(upper_blocks_power)
 lower_blocks_volt = np.array(lower_blocks_volt)
 lower_blocks_power = np.array(lower_blocks_power)
 
-# --- Average the power spectra for each LO (for frequency switching stacking) ---
+# --- Average the power spectra for each LO (after block-level stacking) ---
 spec_upper_avg = np.mean(upper_blocks_power, axis=0)
 spec_lower_avg = np.mean(lower_blocks_power, axis=0)
 
@@ -186,17 +164,19 @@ freqs = np.fft.fftshift(np.fft.fftfreq(len_fft, d=1/sample_rate))  # Hz
 rf_upper = freqs + (HI_FREQ - freq_offset)
 rf_lower = freqs + (HI_FREQ + freq_offset)
 
-# --- Interpolate lower onto upper RF grid for stacking ---
+# --- Interpolate off-line (lower LO) onto on-line (upper LO) RF grid ---
 from scipy.interpolate import interp1d
 interp_lower = interp1d(rf_lower, spec_lower_avg, bounds_error=False, fill_value=0)
 spec_lower_on_upper = interp_lower(rf_upper)
 
-# --- Frequency switching stacked spectrum ---
-# Each LO is treated as on-line in its own block set
+# --- Frequency-switched stacked spectrum (on-line minus off-line) ---
 diff_spec_stack = spec_upper_avg - spec_lower_on_upper
 
 # --- Convert to antenna temperature ---
 T_ant = T_sys * (diff_spec_stack / P_cold)
+
+# --- Velocity axis (km/s) ---
+velocity = c * (HI_FREQ - rf_upper) / HI_FREQ / 1000
 
 # --- Velocity and Frequency axis ---
 len_fft = len(T_ant)
