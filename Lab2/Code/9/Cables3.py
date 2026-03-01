@@ -4,87 +4,79 @@ import time
 
 # ---------- SDR SETTINGS ----------
 CENTER_FREQ = 1420e6
-SAMPLE_RATE = 250_000  # NESDR SMArt valid
+SAMPLE_RATE = 100000  # very safe for Pi
 GAIN = 20
-CHUNK_SIZE = 4096       # smaller = more stable
-SLEEP_TIME = 0.005      # let USB buffer drain
-BLOCK_TIME = 0.1        # seconds per short block
+CHUNK_SIZE = 2048     # small chunk for USB
+SLEEP_TIME = 0.005
+BLOCK_TIME = 0.05     # 50 ms per burst
+NUM_BLOCKS = 10       # average over 10 bursts
 # -----------------------------------
 
-def block_capture(total_integration_time):
-    """
-    Capture samples in small blocks to avoid Pi USB hang.
-    Returns concatenated IQ array.
-    """
+def snapshot_capture():
+    """Capture a single short burst (50ms) and stop SDR."""
     sdr = ugradio.sdr.SDR(center_freq=CENTER_FREQ,
                           sample_rate=SAMPLE_RATE,
                           gain=GAIN)
-    time.sleep(0.1)  # allow SDR to stabilize
+    time.sleep(0.05)  # allow SDR to stabilize
 
-    num_blocks = int(np.ceil(total_integration_time / BLOCK_TIME))
-    IQ_blocks = []
+    collected = 0
+    data_list = []
+    total_samples = int(SAMPLE_RATE * BLOCK_TIME)
 
-    for b in range(num_blocks):
-        block_samples = int(SAMPLE_RATE * BLOCK_TIME)
-        collected = 0
-        data_list = []
+    while collected < total_samples:
+        try:
+            d = sdr.capture_data(CHUNK_SIZE)
+            data_list.append(d)
+            collected += len(d)
+            time.sleep(SLEEP_TIME)
+        except Exception as e:
+            print("USB retry:", e)
 
-        while collected < block_samples:
-            try:
-                d = sdr.capture_data(CHUNK_SIZE)
-                data_list.append(d)
-                collected += len(d)
-                time.sleep(SLEEP_TIME)
-            except Exception as e:
-                print("USB retry:", e)
-
-        block_data = np.concatenate(data_list)
-        IQ_blocks.append(block_data)
-
-    return np.concatenate(IQ_blocks)
+    sdr.stop()  # stop streaming and release USB
+    return np.concatenate(data_list)
 
 input("next part")
 
-# User input
-input_power_dbm = -40  # generator output
-R = 50                  # ohms
-integration_time = 1    # total seconds
+input_power_dbm = -40
+R = 50
 
-# Convert dBm → Vrms
-P_watts = 10**((input_power_dbm - 30)/10)
-V_rms_true = np.sqrt(P_watts * R)
+V_rms_true = np.sqrt(10**((input_power_dbm - 30)/10) * R)
+V_meas_list = []
 
-print("Capturing calibration tone...")
-data = block_capture(integration_time)
+print("Capturing calibration bursts...")
+for _ in range(NUM_BLOCKS):
+    data = snapshot_capture()
+    I = np.real(data)
+    Q = np.imag(data)
+    V_meas_list.append(np.sqrt(np.mean(I**2 + Q**2)))
 
-I = np.real(data)
-Q = np.imag(data)
-
-V_meas = np.sqrt(np.mean(I**2 + Q**2))
+V_meas = np.mean(V_meas_list)
 K = V_rms_true / V_meas
 
 print("True Vrms:", V_rms_true)
-print("Measured digital RMS:", V_meas)
-print("Calibration factor (V per digital unit):", K)
+print("Average digital RMS:", V_meas)
+print("Voltage scale factor (V/unit):", K)
 
 input("next part")
 
-c = 3e8         # speed of light
-L = 5.0         # cable length in meters
+c = 3e8
+L = 5.0
 
-def measure_phase():
-    data = block_capture(0.5)  # short integration for safety
-    phasor = np.mean(data)
-    return np.angle(phasor)
+def measure_phase_snapshot():
+    phases = []
+    for _ in range(NUM_BLOCKS):
+        data = snapshot_capture()
+        phasor = np.mean(data)
+        phases.append(np.angle(phasor))
+    return np.mean(phases)
 
 print("Measure SHORT cable...")
-phi_short = measure_phase()
+phi_short = measure_phase_snapshot()
 
 print("Measure LONG cable...")
-phi_long = measure_phase()
+phi_long = measure_phase_snapshot()
 
 delta_phi = np.angle(np.exp(1j*(phi_long - phi_short)))
-
 v = (2 * np.pi * CENTER_FREQ * L) / delta_phi
 VF = v / c
 
@@ -94,19 +86,20 @@ print("Velocity factor:", VF)
 
 input("next part")
 
-L = 5.0  # cable length in meters
+L = 5.0
 
-def measure_power_db():
-    data = block_capture(0.5)  # short integration
-    power_lin = np.mean(np.abs(data)**2)
-    return 10 * np.log10(power_lin)
+def measure_power_snapshot():
+    powers = []
+    for _ in range(NUM_BLOCKS):
+        data = snapshot_capture()
+        powers.append(10 * np.log10(np.mean(np.abs(data)**2)))
+    return np.mean(powers)
 
 print("Measure SHORT cable power...")
-P_short = measure_power_db()
+P_short = measure_power_snapshot()
 
-input("long cable")
 print("Measure LONG cable power...")
-P_long = measure_power_db()
+P_long = measure_power_snapshot()
 
 delta_P = P_short - P_long
 alpha_db_per_m = delta_P / L
