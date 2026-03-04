@@ -1,0 +1,267 @@
+
+import numpy as np
+import ugradio
+import os
+import matplotlib.pyplot as plt
+from scipy.interpolate import interp1d
+from pathlib import Path
+from datetime import datetime
+
+############################
+# CONFIGURATION
+############################
+
+HI_FREQ = 1420.405751e6  # Hydrogen rest frequency [Hz]
+c = 299792458            # Speed of light [m/s]
+
+nsamples = 2**14
+nblocks_cal = 2048
+nblocks_obs = 4096
+
+gain = 40
+sample_rate = 1e6
+freq_offset = 100e3
+
+T_hot = 300  # Hot load temperature [K]
+T_cold = 10  # Cold sky temperature [K]
+
+today = datetime.now().strftime('%Y-%m-%d')
+folder_path = f"data/{today}"
+
+os.makedirs(folder_path, exist_ok=True)
+
+############################
+# HELPER FUNCTION
+############################
+
+def process_voltages(result):
+    """Convert SDR output into complex voltage array (nblocks, nsamples)."""
+    
+    # Extract raw array safely
+    if isinstance(result, dict):
+        if 'data' in result:
+            voltages = np.array(result['data'])
+        elif 'samples' in result:
+            voltages = np.array(result['samples'])
+        else:
+            first_array = next(
+                v for v in result.values()
+                if isinstance(v, (list, np.ndarray))
+            )
+            voltages = np.array(first_array)
+    else:
+        voltages = np.array(result)
+
+    # Case 1: (nblocks, nsamples, 2) → convert I/Q to complex
+    if voltages.ndim == 3 and voltages.shape[2] == 2:
+        voltages = voltages[..., 0] + 1j * voltages[..., 1]
+
+    # Case 2: flat array → reshape dynamically
+    elif voltages.ndim == 1:
+        total_samples = len(voltages)
+        actual_blocks = total_samples // nsamples
+        voltages = voltages[:actual_blocks * nsamples]
+        voltages = voltages.reshape(actual_blocks, nsamples)
+
+    # Case 3: already (nblocks, nsamples)
+    elif voltages.ndim == 2:
+        pass
+
+    else:
+        raise ValueError(f"Unexpected voltage shape: {voltages.shape}")
+
+    return voltages.astype(np.complex64)
+
+
+def capture(label, center_freq, nblocks):
+    """Capture averaged power spectrum."""
+    
+    input(f"Aim horn at {label} and press Enter...")
+
+    sdr = ugradio.sdr.SDR(direct=False)
+    sdr.sample_rate = sample_rate
+    sdr.gain = gain
+    sdr.center_freq = center_freq
+
+    result = ugradio.sdr.capture_data(
+        sdr, nsamples=nsamples, nblocks=nblocks
+    )
+
+    voltages = process_voltages(result)
+
+    print(f"{label} raw shape after processing:", voltages.shape)
+
+    # Compute averaged power spectrum
+    power_blocks = []
+
+    for block in voltages:
+        fft = np.fft.fft(block)
+        power_blocks.append(np.abs(fft)**2)
+
+    power = np.mean(power_blocks, axis=0)
+    power = np.fft.fftshift(power)
+
+    sdr.close()
+    print(f"{label} capture complete.")
+
+    return voltages, power
+
+
+############################
+# 1 Cold Sky Calibration
+############################
+
+data_cold, spec_cold = capture("COLD SKY", HI_FREQ, nblocks_cal)
+
+############################
+# 2 Hot Load Calibration
+############################
+
+data_hot, spec_hot = capture("HOT LOAD", HI_FREQ, nblocks_cal)
+
+
+len_fft = len(spec_cold)
+freqs = np.fft.fftshift(np.fft.fftfreq(len_fft, d=1/sample_rate))
+
+rf_cal = freqs + HI_FREQ
+
+mask = (rf_cal > 1420.1e6) & (rf_cal < 1420.6e6)
+
+P_cold = np.mean(spec_cold[mask])
+P_hot = np.mean(spec_hot[mask])
+
+Y = P_hot / P_cold
+T_sys = (T_hot - Y * T_cold) / (Y - 1)
+
+print(f"Y-factor: {Y:.4f}")
+print(f"Estimated system temperature: {T_sys:.2f} K")
+
+############################
+# 3 Frequency-Switched HI Observation
+############################
+
+upper_blocks_volt = []
+upper_blocks_power = []
+lower_blocks_volt = []
+lower_blocks_power = []
+
+sdr = ugradio.sdr.SDR(direct=False)
+sdr.sample_rate = sample_rate
+sdr.gain = gain
+
+input("Aim horn at HI target and press Enter...")
+
+for i in range(nblocks_obs):
+
+    if i % 2 == 0:
+        sdr.center_freq = HI_FREQ - freq_offset
+        is_upper = True
+    else:
+        sdr.center_freq = HI_FREQ + freq_offset
+        is_upper = False
+
+    print(f"Capturing block {i+1}/{nblocks_obs}")
+
+    result = ugradio.sdr.capture_data(
+        sdr, nsamples=nsamples, nblocks=1
+    )
+
+    voltages = process_voltages(result)
+    block = voltages[0]
+
+    fft_block = np.fft.fft(block)
+    power_block = np.abs(fft_block)**2
+    power_block = np.fft.fftshift(power_block)
+
+    if is_upper:
+        upper_blocks_volt.append(block)
+        upper_blocks_power.append(power_block)
+    else:
+        lower_blocks_volt.append(block)
+        lower_blocks_power.append(power_block)
+
+sdr.close()
+
+upper_blocks_volt = np.array(upper_blocks_volt)
+upper_blocks_power = np.array(upper_blocks_power)
+lower_blocks_volt = np.array(lower_blocks_volt)
+lower_blocks_power = np.array(lower_blocks_power)
+
+spec_upper_avg = np.mean(upper_blocks_power, axis=0)
+spec_lower_avg = np.mean(lower_blocks_power, axis=0)
+
+############################
+# Frequency Alignment & Stacking
+############################
+
+len_fft = len(spec_upper_avg)
+
+freqs = np.fft.fftshift(
+    np.fft.fftfreq(len_fft, d=1/sample_rate)
+)
+
+rf_upper = freqs + (HI_FREQ - freq_offset)
+rf_lower = freqs + (HI_FREQ + freq_offset)
+
+interp_lower = interp1d(
+    rf_lower,
+    spec_lower_avg,
+    bounds_error=False,
+    fill_value=0
+)
+
+spec_lower_on_upper = interp_lower(rf_upper)
+
+diff_spec = spec_upper_avg - spec_lower_on_upper
+
+T_ant = T_sys * (diff_spec /  np.mean(P_cold))
+
+velocity = c * (HI_FREQ - rf_upper) / HI_FREQ / 1000  # km/s
+
+############################
+# 4 Save Results
+############################
+
+obstime = datetime.now().strftime("%H%M%S")
+
+np.savez(os.path.join(folder_path, f"HI_21cm_{obstime}.npz"),
+         freq_Hz=rf_upper,
+         velocity_kms=velocity,
+         T_ant=T_ant,
+         data_cold=data_cold,
+         s_cold=spec_cold,
+         data_hot=data_hot,
+         s_hot=spec_hot,
+         upper_volt=upper_blocks_volt,
+         upper_power=upper_blocks_power,
+         lower_volt=lower_blocks_volt,
+         lower_power=lower_blocks_power,
+         spec_upper_avg=spec_upper_avg,
+         spec_lower_avg=spec_lower_avg,
+         diff_spec=diff_spec,
+         T_sys_K=T_sys,
+         Y_factor=Y,
+         HI_rest_freq_Hz=HI_FREQ,
+         lo_upper_Hz=HI_FREQ - freq_offset,
+         lo_lower_Hz=HI_FREQ + freq_offset,
+         nsamples=nsamples,
+         nblocks_cal=nblocks_cal,
+         nblocks_obs=nblocks_obs,
+         unix_time=ugradio.timing.unix_time(),
+         latitude_deg=ugradio.nch.lat,
+         longitude_deg=ugradio.nch.lon
+         )
+
+print("Observation complete and saved.")
+
+############################
+# 5 Plot
+############################
+
+plt.figure(figsize=(10,5))
+plt.plot(velocity, T_ant)
+plt.xlabel("Velocity (km/s)")
+plt.ylabel("Antenna Temperature (K)")
+plt.title("21-cm HI Spectrum (Frequency-Switched)")
+plt.grid(True)
+plt.show()
