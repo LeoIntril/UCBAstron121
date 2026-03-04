@@ -1,0 +1,139 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.ndimage import uniform_filter1d
+
+# -----------------------------
+# Load NPZ data
+# -----------------------------
+data = np.load("./Data/03-03-26/HI_21cm_190540.npz")
+
+spec_upper = data['spec_upper_avg']  # On-line
+spec_lower = data['spec_lower_avg']  # Off-line
+spec_hot   = data['s_hot']       # Hot load
+spec_cold  = data['s_cold']      # Cold load
+freq_Hz    = data['freq_Hz']     # RF frequency array
+
+T_hot = 300  # K
+T_cold = 10  # K
+HI_FREQ = data['HI_rest_freq_Hz']  # 1420.405751e6 Hz
+c = 299792458  # m/s
+
+# -----------------------------
+# Compute system temperature from Y-factor
+# -----------------------------
+P_hot = np.mean(spec_hot)
+P_cold = np.mean(spec_cold)
+Y = P_hot / P_cold
+T_sys = (T_hot - Y*T_cold) / (Y-1)
+print(f"Y-factor: {Y:.4f}, System temperature: {T_sys:.2f} K")
+
+# -----------------------------
+# Compute calibrated antenna temperature
+# -----------------------------
+# Treat spec_upper as S_on and spec_lower as S_off
+T_ant = T_sys * (spec_lower - spec_upper) / spec_upper
+
+# -----------------------------
+# Smooth the spectrum
+# Determine channel width in km/s
+# HI line ~ 1 km/s, compute number of channels per km/s
+delta_nu = np.abs(freq_Hz[1] - freq_Hz[0])  # Hz per channel
+delta_v = c * delta_nu / HI_FREQ / 1000     # km/s per channel
+channels_per_kms = int(np.ceil(1 / delta_v))  # smooth ~1 km/s
+T_ant_smooth = uniform_filter1d(T_ant, size=channels_per_kms)
+
+# -----------------------------
+# Compute Doppler velocity axis
+# -----------------------------
+velocity_kms = c * (HI_FREQ - freq_Hz) / HI_FREQ / 1000  # km/s
+
+# -----------------------------
+# Plot: calibrated vs RF frequency
+# -----------------------------
+plt.figure(figsize=(10,5))
+plt.plot(freq_Hz / 1e6, T_ant_smooth, color = 'black')
+plt.xlabel("RF Frequency (MHz)")
+plt.ylabel("Antenna Temperature (K)")
+plt.title("Calibrated 21-cm HI Spectrum vs RF Frequency")
+plt.gca().xaxis.get_major_formatter().set_useOffset(False)
+plt.grid(True)
+plt.show()
+
+# -----------------------------
+# Plot: calibrated vs Doppler velocity
+# -----------------------------
+plt.figure(figsize=(10,5))
+plt.plot(velocity_kms, T_ant_smooth, color = 'black')
+plt.xlabel("Velocity (km/s)")
+plt.ylabel("Antenna Temperature (K)")
+plt.title("Calibrated 21-cm HI Spectrum vs Doppler Velocity")
+plt.grid(True)
+plt.show()
+
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+# -----------------------------
+# Load data
+# -----------------------------
+data = np.load("./Data/03-03-26/HI_21cm_Target_18_20.npz")
+
+spec_hot  = data['s_hot']
+spec_cold = data['s_cold']
+freq_Hz   = data['freq_Hz']
+
+# -----------------------------
+# Normalize (optional but helpful for shape comparison)
+# -----------------------------
+spec_hot_norm  = spec_hot  / np.mean(spec_hot)
+spec_cold_norm = spec_cold / np.mean(spec_cold)
+
+# -----------------------------
+# Compute Y-factor spectrum
+# -----------------------------
+Y_spec = spec_hot / spec_cold
+Y_mean = np.mean(Y_spec)
+
+print(f"Mean Y-factor: {Y_mean:.4f}")
+
+#mask = (rf_upper > 1420.1e6) & (rf_upper < 1420.6e6)
+
+
+# -----------------------------
+# Plot 1: Raw Power Spectra
+# -----------------------------
+plt.figure(figsize=(10,5))
+plt.plot(freq_Hz/1e6, spec_hot, label="Hot Load (300 K)", color = 'black')
+plt.plot(freq_Hz/1e6, spec_cold, label="Cold Sky (10 K)", color = 'magenta')
+plt.xlabel("Frequency (MHz)")
+plt.ylabel("Power (arb units)")
+plt.title("Hot vs Cold Calibration Spectra")
+plt.legend()
+plt.grid(True)
+plt.gca().xaxis.get_major_formatter().set_useOffset(False)
+plt.show()
+
+# -----------------------------
+# Plot 2: Normalized Spectra (Bandpass Shape)
+# -----------------------------
+plt.figure(figsize=(10,5))
+plt.plot(freq_Hz/1e6, spec_hot_norm, label="Hot (normalized)", color = 'black')
+plt.plot(freq_Hz/1e6, spec_cold_norm, label="Cold (normalized)", color = 'magenta')
+plt.xlabel("Frequency (MHz)")
+plt.ylabel("Normalized Power")
+plt.title("Bandpass Shape Comparison")
+plt.legend()
+plt.grid(True)
+plt.show()
+
+# -----------------------------
+# Plot 3: Y-factor vs Frequency
+# -----------------------------
+plt.figure(figsize=(10,5))
+plt.plot(freq_Hz/1e6, Y_spec, color = 'black')
+plt.xlabel("Frequency (MHz)")
+plt.ylabel("Y-factor (Hot/Cold)")
+plt.title("Y-factor Across Band")
+plt.grid(True)
+plt.show()
