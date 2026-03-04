@@ -221,24 +221,57 @@ velocity = c * (HI_FREQ - rf_upper) / HI_FREQ / 1000  # km/s
 ############################
 # 4 Save Results
 ############################
+from pathlib import Path
+import numpy as np
+from datetime import datetime
+import ugradio
+import os
+
+# -----------------------------
+# Setup paths
+# -----------------------------
+today = datetime.now().strftime('%Y-%m-%d')
+folder_path = Path(f"data/{today}")
+folder_path.mkdir(parents=True, exist_ok=True)
 
 obstime = datetime.now().strftime("%H%M%S")
 
-np.savez(os.path.join(folder_path, f"HI_21cm_{obstime}.npz"),
+# Temp files for atomic save
+npz_tmp_file = folder_path / f"HI_21cm_{obstime}.tmp.npz"
+npz_file     = folder_path / f"HI_21cm_{obstime}.npz"
+
+# -----------------------------
+# Save large voltage/power arrays separately
+# -----------------------------
+large_arrays = {
+    "upper_blocks_volt": upper_blocks_volt,
+    "lower_blocks_volt": lower_blocks_volt,
+    "upper_blocks_power": upper_blocks_power,
+    "lower_blocks_power": lower_blocks_power
+}
+
+for name, arr in large_arrays.items():
+    arr_file = folder_path / f"{name}_{obstime}.npy"
+    print(f"Saving {name} to {arr_file} ...")
+    np.save(arr_file, arr)
+    # Remove reference to free memory (optional)
+    del arr
+print("Large arrays saved separately.")
+
+# -----------------------------
+# Save smaller arrays + metadata into .npz
+# -----------------------------
+np.savez(npz_tmp_file,
          freq_Hz=rf_upper,
          velocity_kms=velocity,
          T_ant=T_ant,
-         data_cold=data_cold,
-         s_cold=spec_cold,
-         data_hot=data_hot,
-         s_hot=spec_hot,
-         upper_volt=upper_blocks_volt,
-         upper_power=upper_blocks_power,
-         lower_volt=lower_blocks_volt,
-         lower_power=lower_blocks_power,
          spec_upper_avg=spec_upper_avg,
          spec_lower_avg=spec_lower_avg,
          diff_spec=diff_spec,
+         s_hot=spec_hot,
+         s_cold=spec_cold,
+         data_cold=data_cold,
+         data_hot=data_hot,
          T_sys_K=T_sys,
          Y_factor=Y,
          HI_rest_freq_Hz=HI_FREQ,
@@ -251,6 +284,12 @@ np.savez(os.path.join(folder_path, f"HI_21cm_{obstime}.npz"),
          latitude_deg=ugradio.nch.lat,
          longitude_deg=ugradio.nch.lon
          )
+
+# -----------------------------
+# Atomic rename to final file
+# -----------------------------
+os.rename(npz_tmp_file, npz_file)
+print(f"Observation complete and saved safely to {npz_file}")
 
 print("Observation complete and saved.")
 
