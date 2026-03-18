@@ -93,88 +93,88 @@ def tracking_loop():
 # Data + visualization loop
 # -----------------------------
 def data_loop():
-    global t_start_unix, jd_start
-
-    plt.ion()
-    fig, axs = plt.subplots(4, 1, figsize=(10, 12))
+    print("[DATA] Thread started")
 
     while True:
-        jd = current_jd()
+        try:
+            jd = current_jd()
 
-        # Sun position
-        ra, dec = ugradio.coord.sunpos(jd)
-        ra, dec = ugradio.coord.precess(ra, dec, jd, 2000)
+            ra, dec = ugradio.coord.sunpos(jd)
+            alt, az = ugradio.coord.get_altaz(ra, dec, jd, LAT, LON, ALT)
 
-        alt, az = ugradio.coord.get_altaz(ra, dec, jd, LAT, LON, ALT)
-        s = radec_to_unit(ra, dec)
+            vis = spec.read_data()
 
-        # Read correlator
-        vis = spec.read_data()
+            amp = np.abs(vis)
+            phase = np.angle(vis)
 
-        amp = np.abs(vis)
-        phase = np.angle(vis)
+            # Store globally (already in your script)
+            vis_buffer.append(vis)
+            jd_buffer.append(jd)
+            alt_buffer.append(alt)
+            az_buffer.append(az)
 
-        # -----------------------------
-        # Buffers
-        # -----------------------------
-        vis_buffer.append(vis)
-        jd_buffer.append(jd)
-        alt_buffer.append(alt)
-        az_buffer.append(az)
+            waterfall_amp.append(amp)
+            waterfall_phase.append(phase)
 
-        # Waterfall buffers
-        waterfall_amp.append(amp)
-        waterfall_phase.append(phase)
+            if len(waterfall_amp) > 200:
+                waterfall_amp.pop(0)
+                waterfall_phase.pop(0)
 
-        if len(waterfall_amp) > 200:
-            waterfall_amp.pop(0)
-            waterfall_phase.pop(0)
+            # Phase tracking
+            phi = phase[CHANNEL]
+            s = radec_to_unit(ra, dec)
+            A_row = (2 * np.pi / lam) * s
 
-        # Phase tracking
-        phi = phase[CHANNEL]
-        A_row = (2 * np.pi / lam) * s
-
-        phase_series.append(phi)
-        A_matrix.append(A_row)
-        time_series.append(jd)
-
-        # Limit memory
-        if len(phase_series) > MAX_SAMPLES:
-            phase_series.pop(0)
-            A_matrix.pop(0)
-            time_series.pop(0)
-
-        # -----------------------------
-        # Plotting
-        # -----------------------------
-        axs[0].cla()
-        axs[1].cla()
-        axs[2].cla()
-        axs[3].cla()
-
-        axs[0].plot(amp)
-        axs[0].set_title("Visibility Amplitude")
-
-        axs[1].plot(phase)
-        axs[1].set_title("Visibility Phase")
-
-        axs[2].imshow(np.array(waterfall_amp), aspect='auto', origin='lower')
-        axs[2].set_title("Amplitude Waterfall")
-
-        if len(phase_series) > 10:
-            phi_array = np.unwrap(np.array(phase_series))
-            axs[3].plot(phi_array)
-            axs[3].set_title("Fringe Phase (Unwrapped)")
-
-        plt.pause(0.01)
-
-        # -----------------------------
-        # Auto-save
-        # -----------------------------
+            phase_series.append(phi)
+            A_matrix.append(A_row)
+            
         if time.time() - t_start_unix > SAVE_INTERVAL:
             save_data()
 
         time.sleep(DATA_INTERVAL)
+
+         except Exception as e:
+            print("[DATA ERROR]", e)
+            time.sleep(1)
+
+def plotting_loop():
+    plt.ion()
+    fig, axs = plt.subplots(4, 1, figsize=(10, 12))
+
+    while True:
+        try:
+            if len(waterfall_amp) == 0:
+                time.sleep(1)
+                continue
+
+            axs[0].cla()
+            axs[1].cla()
+            axs[2].cla()
+            axs[3].cla()
+
+            # Latest data
+            amp = waterfall_amp[-1]
+            phase = waterfall_phase[-1]
+
+            axs[0].plot(amp)
+            axs[0].set_title("Amplitude")
+
+            axs[1].plot(phase)
+            axs[1].set_title("Phase")
+
+            axs[2].imshow(np.array(waterfall_amp), aspect='auto', origin='lower')
+            axs[2].set_title("Amplitude Waterfall")
+
+            if len(phase_series) > 10:
+                phi_array = np.unwrap(np.array(phase_series))
+                axs[3].plot(phi_array)
+                axs[3].set_title("Fringe Phase")
+
+            plt.pause(0.01)
+
+        except Exception as e:
+            print("[PLOT ERROR]", e)
+            time.sleep(1)
 
 # -----------------------------
 # Save function
@@ -277,6 +277,8 @@ try:
     t1.start()
     t2.start()
 
+    plotting_loop()
+    
     while True:
         cmd = input("\nCommands: solve / save / quit : ").strip().lower()
 
