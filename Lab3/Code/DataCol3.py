@@ -133,10 +133,6 @@ def data_loop():
 
         time.sleep(DATA_INTERVAL)
 
-         except Exception as e:
-            print("[DATA ERROR]", e)
-            time.sleep(1)
-
 def plotting_loop():
     plt.ion()
     fig, axs = plt.subplots(4, 1, figsize=(10, 12))
