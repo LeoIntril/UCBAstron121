@@ -128,10 +128,14 @@ def data_loop():
             phase_series.append(phi)
             A_matrix.append(A_row)
             
-        if time.time() - t_start_unix > SAVE_INTERVAL:
-            save_data()
+            if time.time() - t_start_unix > SAVE_INTERVAL:
+                save_data()
 
-        time.sleep(DATA_INTERVAL)
+            time.sleep(DATA_INTERVAL)
+            
+        except Exception as e:
+            print("[DATA ERROR]", e)
+            time.sleep(1)
 
 def plotting_loop():
     plt.ion()
@@ -167,6 +171,10 @@ def plotting_loop():
                 axs[3].set_title("Fringe Phase")
 
             plt.pause(0.01)
+            
+         except Exception as e:
+            print("[DATA ERROR]", e)
+            time.sleep(1)
 
 
 # -----------------------------
