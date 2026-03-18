@@ -103,11 +103,18 @@ def data_loop():
             alt, az = ugradio.coord.get_altaz(ra, dec, jd, LAT, LON, ALT)
 
             vis = spec.read_data()
+            if vis is None:
+                print("[DATA WARNING] SNAP returned None")
+                time.sleep(DATA_INTERVAL)
+                continue
+
+            # Convert to numpy array
+            vis = np.array(vis)
 
             amp = np.abs(vis)
             phase = np.angle(vis)
 
-            # Store globally (already in your script)
+            # Store globally
             vis_buffer.append(vis)
             jd_buffer.append(jd)
             alt_buffer.append(alt)
@@ -121,18 +128,22 @@ def data_loop():
                 waterfall_phase.pop(0)
 
             # Phase tracking
-            phi = phase[CHANNEL]
+            if CHANNEL >= len(phase):
+                channel_idx = len(phase) // 2
+            else:
+                channel_idx = CHANNEL
+            phi = phase[channel_idx]
             s = radec_to_unit(ra, dec)
             A_row = (2 * np.pi / lam) * s
 
             phase_series.append(phi)
             A_matrix.append(A_row)
-            
+
             if time.time() - t_start_unix > SAVE_INTERVAL:
                 save_data()
 
             time.sleep(DATA_INTERVAL)
-            
+
         except Exception as e:
             print("[DATA ERROR]", e)
             time.sleep(1)
