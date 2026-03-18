@@ -168,9 +168,6 @@ def plotting_loop():
 
             plt.pause(0.01)
 
-        except Exception as e:
-            print("[PLOT ERROR]", e)
-            time.sleep(1)
 
 # -----------------------------
 # Save function
