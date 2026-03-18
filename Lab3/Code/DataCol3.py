@@ -78,7 +78,6 @@ def tracking_loop():
         jd = current_jd()
 
         ra, dec = ugradio.coord.sunpos(jd)
-        ra, dec = ugradio.coord.precess(ra, dec, jd, 2000)
 
         alt, az = ugradio.coord.get_altaz(ra, dec, jd, LAT, LON, ALT)
 
