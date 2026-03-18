@@ -1,0 +1,19 @@
+def data_loop():
+    print("[DATA] Thread started")
+
+    while True:
+        try:
+            vis = spec.read_data()
+
+            print("[DATA DEBUG] type(vis):", type(vis))
+            if hasattr(vis, '__len__'):
+                print("[DATA DEBUG] len(vis):", len(vis))
+            else:
+                print("[DATA DEBUG] vis has no len()")
+
+            # Pause to see output
+            time.sleep(2)
+
+        except Exception as e:
+            print("[DATA ERROR]", e)
+            time.sleep(1)
