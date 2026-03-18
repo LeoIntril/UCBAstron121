@@ -22,17 +22,32 @@ POINTING_INTERVAL = 10     # seconds
 DATA_INTERVAL = 2          # seconds
 CHANNEL = 100              # frequency bin to track
 
-MAX_SAMPLES = 2000         # limit memory
+MAX_SAMPLES = 5000
+SAVE_INTERVAL = 600   # seconds (auto-save every 10 min)
+
+OUTPUT_DIR = "data"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # -----------------------------
-# Storage
+# Global buffers
 # -----------------------------
 phase_series = []
 A_matrix = []
 time_series = []
 
+vis_buffer = []
+jd_buffer = []
+alt_buffer = []
+az_buffer = []
+
 waterfall_amp = []
 waterfall_phase = []
+
+# -----------------------------
+# Time tracking
+# -----------------------------
+t_start_unix = time.time()
+jd_start = ugradio.timing.julian_date(t_start_unix)
 
 # -----------------------------
 # Initialize hardware
@@ -75,9 +90,11 @@ def tracking_loop():
         time.sleep(POINTING_INTERVAL)
 
 # -----------------------------
-# Data + Visualization loop
+# Data + visualization loop
 # -----------------------------
 def data_loop():
+    global t_start_unix, jd_start
+
     plt.ion()
     fig, axs = plt.subplots(4, 1, figsize=(10, 12))
 
@@ -88,16 +105,24 @@ def data_loop():
         ra, dec = ugradio.coord.sunpos(jd)
         ra, dec = ugradio.coord.precess(ra, dec, jd, 2000)
 
+        alt, az = ugradio.coord.get_altaz(ra, dec, jd, LAT, LON, ALT)
         s = radec_to_unit(ra, dec)
 
         # Read correlator
         vis = spec.read_data()
 
-        # Extract amplitude + phase
         amp = np.abs(vis)
         phase = np.angle(vis)
 
-        # Store waterfall data
+        # -----------------------------
+        # Buffers
+        # -----------------------------
+        vis_buffer.append(vis)
+        jd_buffer.append(jd)
+        alt_buffer.append(alt)
+        az_buffer.append(az)
+
+        # Waterfall buffers
         waterfall_amp.append(amp)
         waterfall_phase.append(phase)
 
@@ -105,17 +130,15 @@ def data_loop():
             waterfall_amp.pop(0)
             waterfall_phase.pop(0)
 
-        # -----------------------------
-        # Phase tracking for baseline solve
-        # -----------------------------
+        # Phase tracking
         phi = phase[CHANNEL]
-
         A_row = (2 * np.pi / lam) * s
 
         phase_series.append(phi)
         A_matrix.append(A_row)
         time_series.append(jd)
 
+        # Limit memory
         if len(phase_series) > MAX_SAMPLES:
             phase_series.pop(0)
             A_matrix.pop(0)
@@ -129,34 +152,93 @@ def data_loop():
         axs[2].cla()
         axs[3].cla()
 
-        # Raw amplitude
         axs[0].plot(amp)
         axs[0].set_title("Visibility Amplitude")
 
-        # Raw phase
         axs[1].plot(phase)
         axs[1].set_title("Visibility Phase")
 
-        # Waterfall amplitude
-        axs[2].imshow(
-            np.array(waterfall_amp),
-            aspect='auto',
-            origin='lower'
-        )
+        axs[2].imshow(np.array(waterfall_amp), aspect='auto', origin='lower')
         axs[2].set_title("Amplitude Waterfall")
 
-        # Phase vs time (unwrapped)
         if len(phase_series) > 10:
             phi_array = np.unwrap(np.array(phase_series))
             axs[3].plot(phi_array)
-            axs[3].set_title("Fringe Phase vs Time (Unwrapped)")
+            axs[3].set_title("Fringe Phase (Unwrapped)")
 
         plt.pause(0.01)
+
+        # -----------------------------
+        # Auto-save
+        # -----------------------------
+        if time.time() - t_start_unix > SAVE_INTERVAL:
+            save_data()
 
         time.sleep(DATA_INTERVAL)
 
 # -----------------------------
-# Baseline solver (run anytime)
+# Save function
+# -----------------------------
+def save_data():
+    global t_start_unix, jd_start
+    global vis_buffer, jd_buffer, alt_buffer, az_buffer
+
+    if len(vis_buffer) == 0:
+        print("No data to save.")
+        return
+
+    t_end_unix = time.time()
+    jd_end = current_jd()
+
+    timestamp = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    filename = os.path.join(OUTPUT_DIR, f"solar_obs_{timestamp}.npz")
+
+    print(f"\nSaving → {filename}")
+
+    np.savez(
+        filename,
+
+        # Time
+        t_start_unix=t_start_unix,
+        t_end_unix=t_end_unix,
+        jd_start=jd_start,
+        jd_end=jd_end,
+
+        # Location
+        lat=LAT,
+        lon=LON,
+        alt_site=ALT,
+
+        # Instrument
+        frequency_hz=f,
+        wavelength_m=lam,
+
+        # Pointing
+        alt_array=np.array(alt_buffer),
+        az_array=np.array(az_buffer),
+
+        # Data
+        visibilities=np.array(vis_buffer),
+        jd_array=np.array(jd_buffer),
+
+        # Fringe solving
+        phase_series=np.array(phase_series),
+        A_matrix=np.array(A_matrix)
+    )
+
+    print("Saved successfully.")
+
+    # Reset buffers for next block
+    vis_buffer.clear()
+    jd_buffer.clear()
+    alt_buffer.clear()
+    az_buffer.clear()
+
+    t_start_unix = time.time()
+    jd_start = current_jd()
+
+# -----------------------------
+# Baseline solver
 # -----------------------------
 def solve_baseline():
     if len(phase_series) < 20:
@@ -169,12 +251,11 @@ def solve_baseline():
     B_fit, _, _, _ = np.linalg.lstsq(A, phi_array, rcond=None)
 
     print("\n===== BASELINE ESTIMATE =====")
-    print("Bx (E-W): {:.3f} m".format(B_fit[0]))
-    print("By (N-S): {:.3f} m".format(B_fit[1]))
-    print("Bz (Up):  {:.3f} m".format(B_fit[2]))
-    print("Length:   {:.3f} m".format(np.linalg.norm(B_fit)))
+    print(f"Bx (E-W): {B_fit[0]:.3f} m")
+    print(f"By (N-S): {B_fit[1]:.3f} m")
+    print(f"Bz (Up):  {B_fit[2]:.3f} m")
+    print(f"Length:   {np.linalg.norm(B_fit):.3f} m")
 
-    # Compare model vs data
     phi_model = A @ B_fit
 
     plt.figure()
@@ -185,7 +266,7 @@ def solve_baseline():
     plt.show()
 
 # -----------------------------
-# Run threads
+# Main
 # -----------------------------
 try:
     print("Starting system...")
@@ -197,62 +278,19 @@ try:
     t2.start()
 
     while True:
-        cmd = input("\nType 'solve' to estimate baseline: ")
+        cmd = input("\nCommands: solve / save / quit : ").strip().lower()
 
-        if cmd.strip().lower() == "solve":
+        if cmd == "solve":
             solve_baseline()
+
+        elif cmd == "save":
+            save_data()
+
+        elif cmd == "quit":
+            break
 
 except KeyboardInterrupt:
     print("\nStopping system...")
+
+finally:
     ifm.stow()
-
-import datetime
-import os
-
-def save_data():
-    if len(vis_buffer) == 0:
-        print("No data to save.")
-        return
-
-    t_end_unix = time.time()
-    jd_end = current_jd()
-
-    timestamp = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    filename = f"solar_obs_{timestamp}.npz"
-
-    print(f"\nSaving data to {filename}...")
-
-    np.savez(
-        filename,
-
-        # -----------------
-        # Time metadata
-        # -----------------
-        t_start_unix=t_start_unix,
-        t_end_unix=t_end_unix,
-        jd_start=jd_start,
-        jd_end=jd_end,
-
-        # -----------------
-        # Location
-        # -----------------
-        lat=LAT,
-        lon=LON,
-        alt=ALT,
-
-        # -----------------
-        # Instrument
-        # -----------------
-        frequency_hz=f,
-        wavelength_m=lam,
-
-        # -----------------
-        # Data
-        # -----------------
-        visibilities=np.array(vis_buffer),
-        jd_array=np.array(jd_buffer),
-        phase_series=np.array(phase_series),
-        A_matrix=np.array(A_matrix)
-    )
-
-    print("Save complete.")
