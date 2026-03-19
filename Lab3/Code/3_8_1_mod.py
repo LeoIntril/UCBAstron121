@@ -106,6 +106,7 @@ def collect_data(spec):
                 data_buffer["vis"].append(vis_spectrum)
                 data_buffer["times"].append(jd_now)
                 data_buffer["alt_az"].append(current_altaz)
+            time.sleep(1)
 
         except AssertionError:
             # SNAP integration advanced mid-read — harmless, just retry
