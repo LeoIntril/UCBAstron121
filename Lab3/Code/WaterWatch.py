@@ -21,8 +21,8 @@ from pathlib import Path
 from datetime import datetime
 
 today = datetime.now().strftime('%Y-%m-%d')
-OUTPUT_DIR = Path(f"data/{today}")
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_DIR = f"data/{today}"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -40,7 +40,7 @@ VMAX_DB      = None     # colorscale max in dB (None = auto)
 # ---------------------------------------------------------------------------
 
 def get_partial_files():
-    files = sorted(glob.glob(str(OUTPUT_DIR / "sun_data_*.npz"))
+    files = sorted(glob.glob(os.path.join(OUTPUT_DIR, "sun_data_*.npz")))
     return [f for f in files if "master" not in os.path.basename(f)]
 
 def load_all_data():
