@@ -99,6 +99,13 @@ def main():
     ax_wfall, ax_spec = axes
     freq_axis = make_freq_axis()
 
+      # --- Create colorbar once, outside the loop ---
+    im = ax_wfall.imshow(np.zeros((2, N_CHANNELS)), aspect="auto", cmap="inferno")
+    cbar = fig.colorbar(im, ax=ax_wfall, pad=0.02)
+    cbar.set_label("Amplitude (dB)", color="white")
+    cbar.ax.yaxis.set_tick_params(color="white")
+    plt.setp(cbar.ax.yaxis.get_ticklabels(), color="white")
+
     while True:
         vis, times = load_all_data()
 
@@ -113,6 +120,9 @@ def main():
         # --- Left panel: waterfall ---
         ax_wfall.cla()
         ax_wfall.set_facecolor("#0f0f0f")
+
+        vmin = VMIN_DB if VMIN_DB else np.percentile(db, 2)
+        vmax = VMAX_DB if VMAX_DB else np.percentile(db, 98)
 
         im = ax_wfall.imshow(
             db,
@@ -131,11 +141,10 @@ def main():
         for spine in ax_wfall.spines.values():
             spine.set_edgecolor("white")
 
-        cbar = fig.colorbar(im, ax=ax_wfall, pad=0.02)
-        cbar.set_label("Amplitude (dB)", color="white")
-        cbar.ax.yaxis.set_tick_params(color="white")
-        plt.setp(cbar.ax.yaxis.get_ticklabels(), color="white")
-
+        # --- Update existing colorbar instead of creating a new one ---
+        cbar.update_normal(im)
+        cbar.set_clim(vmin, vmax)
+        
         # --- Right panel: latest spectrum ---
         ax_spec.cla()
         ax_spec.set_facecolor("#0f0f0f")
