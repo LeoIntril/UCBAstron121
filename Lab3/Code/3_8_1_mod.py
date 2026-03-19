@@ -31,6 +31,9 @@ import ugradio
 from ugradio import interf, coord
 import snap_spec.snap as snap
 
+from pathlib import Path
+from datetime import datetime
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -48,7 +51,9 @@ POINT_UPDATE_SEC   = 30     # re-point every 30 seconds
 MIN_ALT = 5.0
 
 # Output directory
-OUTPUT_DIR = "."
+today = datetime.now().strftime('%Y-%m-%d')
+OUTPUT_DIR = Path(f"data/{today}")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # Shared data buffer (written by collector thread, read by main thread)
