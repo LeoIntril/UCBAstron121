@@ -142,8 +142,8 @@ def main():
             spine.set_edgecolor("white")
 
         # --- Update existing colorbar instead of creating a new one ---
+        im.set_clim(vmin, vmax)
         cbar.update_normal(im)
-        cbar.set_clim(vmin, vmax)
         
         # --- Right panel: latest spectrum ---
         ax_spec.cla()
