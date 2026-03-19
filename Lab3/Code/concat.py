@@ -16,8 +16,14 @@ import os
 import time
 import glob
 
-OUTPUT_DIR  = "."
-MASTER_FILE = os.path.join(OUTPUT_DIR, "sun_data_master.npz")
+from pathlib import Path
+from datetime import datetime
+
+today = datetime.now().strftime('%Y-%m-%d')
+OUTPUT_DIR = Path(f"data/{today}")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+MASTER_FILE = OUTPUT_DIR / "sun_data_master.npz"
 POLL_SEC    = 30   # how often to check for new files (seconds)
 
 def load_npz(path):
