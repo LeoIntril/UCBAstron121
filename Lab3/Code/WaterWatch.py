@@ -28,7 +28,6 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # Configuration
 # ---------------------------------------------------------------------------
 
-OUTPUT_DIR   = "."
 POLL_SEC     = 15       # how often to refresh the plot (seconds)
 SNAP_SRATE   = 500e6    # SNAP sample rate in Hz (500 MHz for X-band)
 N_CHANNELS   = 1024     # number of frequency channels
@@ -84,6 +83,10 @@ def make_freq_axis():
 # ---------------------------------------------------------------------------
 
 def main():
+    print(f"[waterfall] Watching directory: {os.path.abspath(OUTPUT_DIR)}")
+    files = glob.glob(os.path.join(OUTPUT_DIR, "sun_data_*.npz"))
+    print(f"[waterfall] Found files: {files}")
+    
     print("[waterfall] Starting live waterfall watcher...")
     plt.ion()
     fig, axes = plt.subplots(1, 2, figsize=(14, 7),
