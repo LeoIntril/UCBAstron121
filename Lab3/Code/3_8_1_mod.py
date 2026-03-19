@@ -39,8 +39,8 @@ from datetime import datetime
 # ---------------------------------------------------------------------------
 
 # Observing site (Campbell Hall roof, UC Berkeley)
-LAT  =  37.8732   # degrees N
-LON  = -122.2573  # degrees E
+LAT  =  ugradio.nch.lat   # degrees N
+LON  =  ugradio.nch.lon  # degrees E
 ALT  =  123.0     # meters above sea level
 
 # Observation duration and pointing update cadence
