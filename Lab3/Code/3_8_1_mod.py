@@ -44,7 +44,7 @@ LON  =  ugradio.nch.lon  # degrees E
 ALT  =  123.0     # meters above sea level
 
 # Observation duration and pointing update cadence
-OBS_DURATION_SEC   = 3600   # 1 hour
+OBS_DURATION_SEC   = 5400   # 1 hour
 POINT_UPDATE_SEC   = 15     # re-point every 30 seconds
 
 # Minimum elevation to observe (degrees)
