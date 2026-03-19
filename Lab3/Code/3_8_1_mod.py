@@ -45,7 +45,7 @@ ALT  =  123.0     # meters above sea level
 
 # Observation duration and pointing update cadence
 OBS_DURATION_SEC   = 3600   # 1 hour
-POINT_UPDATE_SEC   = 30     # re-point every 30 seconds
+POINT_UPDATE_SEC   = 15     # re-point every 30 seconds
 
 # Minimum elevation to observe (degrees)
 MIN_ALT = 5.0
