@@ -32,8 +32,8 @@ OUTPUT_DIR   = "."
 POLL_SEC     = 15       # how often to refresh the plot (seconds)
 SNAP_SRATE   = 500e6    # SNAP sample rate in Hz (500 MHz for X-band)
 N_CHANNELS   = 1024     # number of frequency channels
-FMIN_GHZ     = 10.0     # X-band low edge (GHz) — adjust to your LO setup
-FMAX_GHZ     = 10.5     # X-band high edge (GHz) — adjust to your LO setup
+FMIN_GHZ = 1.415        # X-band low edge (GHz) — adjust to your LO setup
+FMAX_GHZ = 1.665        # X-band high edge (GHz) — adjust to your LO setup
 VMIN_DB      = None     # colorscale min in dB (None = auto)
 VMAX_DB      = None     # colorscale max in dB (None = auto)
 
