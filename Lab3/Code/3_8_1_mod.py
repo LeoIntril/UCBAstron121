@@ -170,6 +170,32 @@ def save_data(tag=""):
     print(f"[save] Saved {vis.shape[0]} integrations to {fname}")
     return fname
 
+# -----------------------------
+# Command Menu
+# -----------------------------
+def command_menu():
+    """
+    Runs in a separate thread, accepting user commands while
+    observation continues in the background.
+    """
+    print("\n[menu] Command menu active.")
+    while not stop_event.is_set():
+        try:
+            cmd = input("\nCommands: save / quit : ").strip().lower()
+            if cmd == "save":
+                save_data(tag="_manual")
+            elif cmd == "quit":
+                print("[menu] Quit received — stopping observation.")
+                stop_event.set()
+                break
+            else:
+                print(f"[menu] Unknown command: '{cmd}'")
+        except EOFError:
+            # Handles case where stdin is closed
+            break
+
+    print("[menu] Command menu exiting.")
+
 # ---------------------------------------------------------------------------
 # Main observing loop
 # ---------------------------------------------------------------------------
@@ -199,17 +225,17 @@ def main():
     collector = threading.Thread(target=collect_data, args=(spec,), daemon=True)
     collector.start()
 
+     # --- Start command menu thread ---
+    menu = threading.Thread(target=command_menu, daemon=True)
+    menu.start()
+    
     # --- Main loop: update pointing every POINT_UPDATE_SEC ---
     t_start = time.time()
     last_save_time = t_start
 
     try:
-        while True:
+        while not stop_event.is_set():
             elapsed = time.time() - t_start
-
-            if elapsed >= OBS_DURATION_SEC:
-                print(f"[main] Observation complete ({OBS_DURATION_SEC/3600:.1f} hr).")
-                break
 
             # Update pointing
             result = point_to_sun(ifm)
@@ -223,9 +249,9 @@ def main():
                 save_data(tag="_partial")
                 last_save_time = time.time()
 
-            remaining = OBS_DURATION_SEC - elapsed
-            print(f"[main] {elapsed/60:.1f} min elapsed, {remaining/60:.1f} min remaining. "
-                  f"Buffer size: {len(data_buffer['times'])} integrations.")
+            remaining_buf = len(data_buffer['times'])
+            print(f"[main] {elapsed/60:.1f} min elapsed. "
+                  f"Buffer size: {remaining_buf} integrations.")
 
             time.sleep(POINT_UPDATE_SEC)
 
@@ -237,6 +263,7 @@ def main():
         print("[main] Stopping collector thread...")
         stop_event.set()
         collector.join(timeout=5)
+        menu.join(timeout=2)
 
         # --- Save final data ---
         fname = save_data(tag="_final")
