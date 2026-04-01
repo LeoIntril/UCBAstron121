@@ -1,7 +1,7 @@
 """
 observe_sun.py
 --------------
-Short (~1 hour) test observation of the Sun with the X-band interferometer.
+Observation of the Sun with the X-band interferometer.
 Uses a background thread to collect and buffer visibility data while the
 main thread handles pointing updates.
 
@@ -13,12 +13,6 @@ Output:
         - vis:      array of complex visibility spectra, shape (N_integrations, 1024)
         - times:    array of JD timestamps for each integration
         - alt_az:   array of (alt, az) pointings, shape (N_integrations, 2)
-
-Fixes applied:
-    - Removed coord.precess() call: sunpos() already returns current-epoch coords
-    - Removed prev_acc_cnt kwarg from read_data(): not supported; use acc_cnt polling
-    - get_altaz() called with equinox='J2000' to match sunpos() output
-    - read_data() return keys printed on first call for debugging
 """
 
 import numpy as np
