@@ -27,6 +27,9 @@ import snap_spec.snap as snap
 
 from pathlib import Path
 
+import subprocess
+import sys
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -177,19 +180,51 @@ def command_menu():
     observation continues in the background.
     """
     print("\n[menu] Command menu active.")
+    watchers = {}  # track launched subprocesses
+    
     while not stop_event.is_set():
         try:
-            cmd = input("\nCommands: save / quit : ").strip().lower()
+            cmd = input("\nCommands: save / concat / waterfall / quit : ").strip().lower()
+            
             if cmd == "save":
                 save_data(tag="_manual")
+            
+            elif cmd == "concat":
+                if "concat" in watchers and watchers["concat"].poll() is None:
+                    print("[menu] Concat watcher is already running.")
+                else:
+                    watchers["concat"] = subprocess.Popen(
+                        [sys.executable, "concat_watcher.py"],
+                        creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32"
+                        else 0,
+                    )
+                    print("[menu] Concat watcher launched.")
+
+            elif cmd == "waterfall":
+                if "waterfall" in watchers and watchers["waterfall"].poll() is None:
+                    print("[menu] Waterfall watcher is already running.")
+                else:
+                    watchers["waterfall"] = subprocess.Popen(
+                        [sys.executable, "waterfall_watcher.py"],
+                        creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32"
+                        else 0,
+                    )
+                    print("[menu] Waterfall watcher launched.")
+                    
             elif cmd == "quit":
                 print("[menu] Quit received — stopping observation.")
+                # Clean up any launched subprocesses
+                for name, proc in watchers.items():
+                    if proc.poll() is None:
+                        print(f"[menu] Terminating {name} watcher.")
+                        proc.terminate()
                 stop_event.set()
                 break
+
             else:
                 print(f"[menu] Unknown command: '{cmd}'")
+                
         except EOFError:
-            # Handles case where stdin is closed
             break
 
     print("[menu] Command menu exiting.")
