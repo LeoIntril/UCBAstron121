@@ -142,7 +142,7 @@ def point_to_sun(ifm):
     alt, az = coord.get_altaz(ra, dec, jd, LAT, LON, ALT, equinox='J2000')
 
     if alt < MIN_ALT:
-        print(f"[pointing] Sun too low: alt={alt:.1f}°.")
+        print(f"[pointing] Sun too low: alt={alt:.1f}° — holding current position.")
         return None
 
     print(f"[pointing] Pointing to Sun: alt={alt:.1f}°, az={az:.1f}°")
@@ -220,8 +220,9 @@ def main():
             # Update pointing
             result = point_to_sun(ifm)
             if result is None:
-                print("[main] Sun set below minimum altitude. Ending observation.")
-                break
+                print("[main] Sun below minimum altitude — holding position, continuing observation.")
+            else:
+                print(f"[pointing] Pointing updated: alt={result[0]:.1f}°, az={result[1]:.1f}°")
 
             # Periodic mid-observation save (every 5 minutes) as a safety backup
             if time.time() - last_save_time > 300:
