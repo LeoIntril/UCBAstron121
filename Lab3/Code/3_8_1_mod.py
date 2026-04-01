@@ -26,7 +26,6 @@ from ugradio import interf, coord
 import snap_spec.snap as snap
 
 from pathlib import Path
-from datetime import datetime
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -38,7 +37,6 @@ LON  =  ugradio.nch.lon  # degrees E
 ALT  =  123.0     # meters above sea level
 
 # Observation duration and pointing update cadence
-OBS_DURATION_SEC   = 5400   # 1 hour
 POINT_UPDATE_SEC   = 15     # re-point every 30 seconds
 
 # Minimum elevation to observe (degrees)
@@ -202,7 +200,7 @@ def command_menu():
 
 def main():
     print("=" * 60)
-    print("X-Band Interferometer — Sun Test Observation (~1 hr)")
+    print("X-Band Interferometer — Sun Test Observation")
     print("=" * 60)
 
     # --- Initialize hardware ---
@@ -211,7 +209,7 @@ def main():
 
     print("[init] Connecting to SNAP correlator...")
     spec = snap.UGRadioSnap()
-    spec.initialize(mode='corr')
+    spec.initialize(mode='corr, force=True)
     print("[init] SNAP initialized.")
 
     # --- Check Sun is up before starting ---
