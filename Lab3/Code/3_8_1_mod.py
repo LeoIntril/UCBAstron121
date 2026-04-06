@@ -246,7 +246,7 @@ def main():
 
     print("[init] Connecting to SNAP correlator...")
     spec = snap.UGRadioSnap()
-    spec.initialize(mode='corr, force=True)
+    spec.initialize(mode='corr', force=True)
     print("[init] SNAP initialized.")
 
     # --- Check Sun is up before starting ---
