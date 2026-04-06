@@ -1,0 +1,90 @@
+"""
+sync_watcher.py
+---------------
+Runs on your LAPTOP to periodically pull new data from the RPi
+to a local directory using rsync.
+
+Usage:
+    python3 sync_watcher.py
+
+Requirements:
+    - SSH access to the RPi (password or key-based)
+    - rsync installed on both machines (default on macOS/Linux)
+
+User Info:
+Verify rsync: rsync -avz pi@192.168.x.x:~/your_project/data/ ./data/
+RPi ID: 10.32.92.205
+"""
+
+import subprocess
+import time
+import os
+from datetime import datetime
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Configuration — edit these to match your setup
+# ---------------------------------------------------------------------------
+
+RPI_USER     = "pi"                        # RPi username
+RPI_HOST     = "your-rpi-hostname-or-ip"  # e.g. "raspberrypi.local" or "192.168.1.42"
+RPI_DATA_DIR = "~/your_project/data"      # path to data folder ON the RPi
+
+today        = datetime.now().strftime('%Y-%m-%d')
+LOCAL_DIR    = Path(f"data/{today}")       # where to save on your laptop
+LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+
+SYNC_INTERVAL_SEC = 60    # how often to sync (seconds)
+
+# ---------------------------------------------------------------------------
+
+def run_rsync():
+    """
+    Pull data from RPi to laptop using rsync.
+    Only transfers new or changed files.
+    """
+    source = f"{RPI_USER}@{RPI_HOST}:{RPI_DATA_DIR}/{today}/"
+    dest   = str(LOCAL_DIR) + "/"
+
+    cmd = [
+        "rsync",
+        "-avz",              # archive mode, verbose, compress during transfer
+        "--progress",        # show per-file progress
+        "--ignore-existing", # skip files already on laptop — safe since partials are immutable once written
+        source,
+        dest
+    ]
+
+    print(f"[sync] Pulling from {source} → {dest}")
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            # Count how many .npz files we have locally
+            npz_files = list(LOCAL_DIR.glob("sun_data_*.npz"))
+            print(f"[sync] Sync complete. {len(npz_files)} .npz file(s) locally.")
+            if result.stdout.strip():
+                # Print only lines mentioning transferred files
+                for line in result.stdout.splitlines():
+                    if ".npz" in line:
+                        print(f"[sync] Transferred: {line.strip()}")
+        else:
+            print(f"[sync] rsync error:\n{result.stderr}")
+    except FileNotFoundError:
+        print("[sync] rsync not found — install it with: brew install rsync (macOS) "
+              "or apt install rsync (Linux)")
+
+# ---------------------------------------------------------------------------
+
+def main():
+    print(f"[sync] Starting RPi data sync watcher.")
+    print(f"[sync] RPi source : {RPI_USER}@{RPI_HOST}:{RPI_DATA_DIR}/{today}/")
+    print(f"[sync] Local dest : {LOCAL_DIR.resolve()}")
+    print(f"[sync] Sync interval: {SYNC_INTERVAL_SEC}s\n")
+
+    while True:
+        run_rsync()
+        print(f"[sync] Next sync in {SYNC_INTERVAL_SEC}s...")
+        time.sleep(SYNC_INTERVAL_SEC)
+
+if __name__ == "__main__":
+    main()
