@@ -119,31 +119,33 @@ def collect_data(spec):
 # Shared variable so the collector thread can log current pointing
 current_altaz = (np.nan, np.nan)
 
-def point_to_sun(ifm):
-    """
-    Compute the current alt/az of the Sun and point the interferometer there.
-    sunpos() already returns coordinates in the current epoch, so no
-    precession step is needed.
-    Returns (alt, az) if successful, or None if the Sun is too low.
-    """
+def point_to_sun(ifm, retries=3, retry_delay=5):
     global current_altaz
 
     jd = ugradio.timing.julian_date()
-
-    # sunpos returns RA in hours, Dec in degrees, current epoch
     ra, dec = coord.sunpos(jd)
-
-    # get_altaz expects RA in hours, Dec in degrees; equinox matches sunpos output
     alt, az = coord.get_altaz(ra, dec, jd, LAT, LON, ALT, equinox='J2000')
 
     if alt < MIN_ALT:
         print(f"[pointing] Sun too low: alt={alt:.1f}° — holding current position.")
         return None
 
-    print(f"[pointing] Pointing to Sun: alt={alt:.1f}°, az={az:.1f}°")
-    current_altaz = (alt, az)
-    ifm.point(alt, az)
-    return alt, az
+    for attempt in range(1, retries + 1):
+        try:
+            ifm.point(alt, az)
+            current_altaz = (alt, az)
+            print(f"[pointing] Pointing to Sun: alt={alt:.1f}°, az={az:.1f}°")
+            return alt, az
+        except AssertionError:
+            print(f"[pointing] Attempt {attempt}/{retries} failed — "
+                  f"server rejected command. Retrying in {retry_delay}s...")
+            time.sleep(retry_delay)
+        except Exception as e:
+            print(f"[pointing] Attempt {attempt}/{retries} unexpected error: {e}")
+            time.sleep(retry_delay)
+
+    print(f"[pointing] All {retries} attempts failed — holding current position.")
+    return None
 
 # ---------------------------------------------------------------------------
 # Save buffer to disk - modifed to clear buffer so next save only contains new data.
