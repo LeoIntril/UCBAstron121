@@ -83,8 +83,8 @@ def load_npz(path):
 
 def load_main():
     """Load existing main file if it exists, return empty arrays otherwise."""
-    if main_FILE.exists():
-        d = np.load(str(main_FILE), allow_pickle=False)
+    if MAIN_FILE.exists():
+        d = np.load(str(MAIN_FILE), allow_pickle=False)
         return d["vis"], d["times"], d["alt_az"]
     return None, None, None
 
@@ -94,7 +94,7 @@ def load_main():
 
 def main():
     print(f"[concat] Starting. Watching: {OUTPUT_DIR.resolve()}")
-    print(f"[concat] main file: {main_FILE}")
+    print(f"[concat] main file: {MAIN_FILE}")
 
     processed = load_manifest()
     print(f"[concat] Already processed {len(processed)} file(s) from previous run.")
@@ -155,7 +155,7 @@ def main():
 
         else:
             print(f"[concat] No new files. main has "
-                  f"{'no data yet' if not main_FILE.exists() else 'existing data'}.")
+                  f"{'no data yet' if not MAIN_FILE.exists() else 'existing data'}.")
 
         time.sleep(POLL_SEC)
 
