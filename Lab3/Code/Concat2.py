@@ -158,7 +158,7 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
+"""
 
 The key safety principle is the **three-step transfer sequence** for each file:
 ```
@@ -181,3 +181,4 @@ observe_sun.py              sync_watcher.py
                               concat_watcher.py
                                 ↓
                               sun_data_main.npz
+"""
