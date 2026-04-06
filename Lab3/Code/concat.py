@@ -15,6 +15,7 @@ import os
 import time
 import glob
 import json
+import ugradio
 from pathlib import Path
 from datetime import datetime
 
@@ -34,9 +35,9 @@ POLL_SEC      = 30
 METADATA = {
     "observer"      : "UC Berkeley Undergrad Radio Lab",
     "site"          : "Campbell Hall Roof",
-    "lat_deg"       : 37.8732,
-    "lon_deg"       : -122.2573,
-    "alt_m"         : 123.0,
+    "lat_deg"       : ugradio.nch.lat,
+    "lon_deg"       : ugradio.nch.lon,
+    "alt_m"         : ugradio.nch.alt,
     "lo_freq_ghz"   : 1.54,
     "sky_freq_ghz"  : 10.68,
     "fmin_ghz"      : 1.415,
