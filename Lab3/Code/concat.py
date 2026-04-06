@@ -2,7 +2,7 @@
 concat_watcher.py
 -----------------
 Watches the output directory for new sun_data_*.npz files and
-concatenates them into a single growing master file in real time.
+concatenates them into a single growing main file in real time.
 Tracks already-processed files to avoid redundant reads.
 Preserves observation metadata alongside the data.
 
@@ -27,11 +27,11 @@ today      = datetime.now().strftime('%Y-%m-%d')
 OUTPUT_DIR = Path(f"data/{today}")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-MASTER_FILE   = OUTPUT_DIR / "sun_data_master.npz"
+MAIN_FILE   = OUTPUT_DIR / "sun_data_main.npz"
 MANIFEST_FILE = OUTPUT_DIR / "manifest.json"   # tracks processed files
 POLL_SEC      = 30
 
-# Observation metadata to embed in the master file
+# Observation metadata to embed in the main file
 METADATA = {
     "observer"      : "UC Berkeley Undergrad Radio Lab",
     "site"          : "Campbell Hall Roof",
@@ -69,22 +69,22 @@ def save_manifest(processed):
 # ---------------------------------------------------------------------------
 
 def get_partial_files():
-    """Return sorted list of partial files, excluding master."""
+    """Return sorted list of partial files, excluding main."""
     files = sorted(glob.glob(str(OUTPUT_DIR / "sun_data_*.npz")))
-    return [f for f in files if "master" not in os.path.basename(f)]
+    return [f for f in files if "main" not in os.path.basename(f)]
 
 def load_npz(path):
     d = np.load(path, allow_pickle=False)
     return d["vis"], d["times"], d["alt_az"]
 
 # ---------------------------------------------------------------------------
-# Load existing master if present
+# Load existing main if present
 # ---------------------------------------------------------------------------
 
-def load_master():
-    """Load existing master file if it exists, return empty arrays otherwise."""
-    if MASTER_FILE.exists():
-        d = np.load(str(MASTER_FILE), allow_pickle=False)
+def load_main():
+    """Load existing main file if it exists, return empty arrays otherwise."""
+    if main_FILE.exists():
+        d = np.load(str(main_FILE), allow_pickle=False)
         return d["vis"], d["times"], d["alt_az"]
     return None, None, None
 
@@ -94,7 +94,7 @@ def load_master():
 
 def main():
     print(f"[concat] Starting. Watching: {OUTPUT_DIR.resolve()}")
-    print(f"[concat] Master file: {MASTER_FILE}")
+    print(f"[concat] main file: {main_FILE}")
 
     processed = load_manifest()
     print(f"[concat] Already processed {len(processed)} file(s) from previous run.")
@@ -120,13 +120,13 @@ def main():
                     print(f"[concat] Could not read {f}: {e} — skipping.")
 
             if new_vis:
-                # Load existing master and append only new data
-                master_vis, master_times, master_alt_az = load_master()
+                # Load existing main and append only new data
+                main_vis, main_times, main_alt_az = load_main()
 
-                if master_vis is not None:
-                    all_vis    = np.concatenate([master_vis,    np.concatenate(new_vis,    axis=0)], axis=0)
-                    all_times  = np.concatenate([master_times,  np.concatenate(new_times,  axis=0)], axis=0)
-                    all_alt_az = np.concatenate([master_alt_az, np.concatenate(new_alt_az, axis=0)], axis=0)
+                if main_vis is not None:
+                    all_vis    = np.concatenate([main_vis,    np.concatenate(new_vis,    axis=0)], axis=0)
+                    all_times  = np.concatenate([main_times,  np.concatenate(new_times,  axis=0)], axis=0)
+                    all_alt_az = np.concatenate([main_alt_az, np.concatenate(new_alt_az, axis=0)], axis=0)
                 else:
                     all_vis    = np.concatenate(new_vis,    axis=0)
                     all_times  = np.concatenate(new_times,  axis=0)
@@ -138,9 +138,9 @@ def main():
                 all_times  = all_times[order]
                 all_alt_az = all_alt_az[order]
 
-                # Save master with embedded metadata
+                # Save main with embedded metadata
                 np.savez(
-                    str(MASTER_FILE),
+                    str(main_FILE),
                     vis    = all_vis,
                     times  = all_times,
                     alt_az = all_alt_az,
@@ -150,12 +150,12 @@ def main():
                 # Update manifest
                 save_manifest(processed)
 
-                print(f"[concat] Master updated: {all_vis.shape[0]} total integrations, "
+                print(f"[concat] main updated: {all_vis.shape[0]} total integrations, "
                       f"spanning {(all_times[-1]-all_times[0])*24*60:.1f} min.")
 
         else:
-            print(f"[concat] No new files. Master has "
-                  f"{'no data yet' if not MASTER_FILE.exists() else 'existing data'}.")
+            print(f"[concat] No new files. main has "
+                  f"{'no data yet' if not main_FILE.exists() else 'existing data'}.")
 
         time.sleep(POLL_SEC)
 
