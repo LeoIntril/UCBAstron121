@@ -21,9 +21,9 @@ from datetime import datetime
 # Configuration
 # ---------------------------------------------------------------------------
 
-RPI_USER     = "pi"
-RPI_HOST     = "your-rpi-hostname-or-ip"
-RPI_DATA_DIR = "~/your_project/data"
+RPI_USER     = "radiopi"
+RPI_HOST     = "10.32.92.205"
+RPI_DATA_DIR = "~/Jackals_3/data"
 
 today        = datetime.now().strftime('%Y-%m-%d')
 LOCAL_DIR    = Path(f"data/{today}")
