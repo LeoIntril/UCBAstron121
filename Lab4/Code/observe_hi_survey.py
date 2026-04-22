@@ -14,11 +14,12 @@ Observing strategy:
   - Completed pointings logged to a JSON progress file to allow resuming
 
 Usage:
-    python3 observe_hi_survey.py [--plan] [--resume] [--dry-run]
+    python3 observe_hi_survey.py [--plan] [--resume] [--dry-run] [--mode]
 
     --plan    : Print visibility windows for today and exit
     --resume  : Load progress file and skip completed pointings
     --dry-run : Step through grid without moving telescope or capturing data
+    --mode : What do you want to observe (default is HVC)
 
 Output per pointing (in data/<date>/):
     HI_l<LLL.L>_b<+/-BB.B>_jd<XXXXXXXXX.XXXXX>_lo<FREQ>_<tag>.npz
@@ -71,10 +72,91 @@ NSAMPLES_FFT = 2**14           # 16384 pts -> deltanu ~= 153 Hz -> deltav ~= 32 
 NBLOCKS_OBS  = 8192            # blocks per SDR per freq-switch half (~2 min/pointing)
 NBLOCKS_CAL  = 128             # blocks for noise-diode calibration (~1.7 s, plenty for Y-factor)
 GAIN         = 20              # SDR gain [dB] -- 19.7dB actual (nearest valid step)
-FREQ_OFFSET  = 0.8e6           # LO frequency-switch offset [Hz]
-# LO_ON  = HI_FREQ + 0.8 MHz = 1421.2 MHz -> HI at -0.8 MHz from centre (clean)
-# LO_OFF = HI_FREQ - 0.8 MHz = 1419.6 MHz -> HI at +0.8 MHz from centre (clean)
-# Valid overlap = 2.2e6 - 2*0.8e6 = 0.6e6 Hz = +/- 63 km/s
+FREQ_OFFSET  = 0.5e6           # LO frequency-switch offset [Hz]
+# DC dropout fills entire 2.2 MHz band so no placement avoids it entirely.
+# 0.5 MHz offset maximises valid overlap (~+/- 42 km/s) while keeping
+# HI near the band centre where the bandpass shapes best match.
+# Residual baseline slope is removed in post with polynomial fitting.
+
+# -----------------------------------------------------------------------------
+# HVC VELOCITY COVERAGE
+# -----------------------------------------------------------------------------
+# High Velocity Clouds (HVCs) are defined as HI gas with |v_LSR| > 90 km/s.
+# The standard FREQ_OFFSET=0.5 MHz only covers +/-42 km/s (standard HI).
+# To detect HVCs, each pointing is observed at multiple LO centre frequencies,
+# each shifted to place a different velocity window in the valid band.
+#
+# Each LO shift moves the centre of the observed velocity window:
+#   v_centre = C_MS * (HI_FREQ - LO_centre) / HI_FREQ / 1e3  [km/s]
+#
+# Window definitions (centre_velocity_kms, label):
+#   Each window covers centre +/- ~42 km/s of valid bandwidth
+#
+# Known HVC complexes in survey region (l=60-180, b=20-60):
+#   Complex C:  v_LSR ~ -80 to -130 km/s  (most prominent HVC in N sky)
+#   Complex A:  v_LSR ~ -150 to -200 km/s
+#   IVC (Intermediate Velocity Clouds): v_LSR ~ -50 to -90 km/s
+#
+# Primary science goal: detect High Velocity Clouds (HVCs) at |v_LSR| > 90 km/s
+# Strategy: observe each pointing at TWO velocity windows --
+#   1. "std"  (v=0 km/s):    covers local HI, used as reference/context
+#   2. "hvc"  (v=-150 km/s): covers Complex C/A, primary HVC target
+#
+# Known HVC complexes in survey region (l=60-180, b=20-60):
+#   Complex C: v_LSR ~ -80 to -170 km/s  (most prominent HVC in northern sky,
+#              thought to be accreting low-metallicity gas onto the Milky Way)
+#   Complex A: v_LSR ~ -150 to -200 km/s
+#   Complex M: v_LSR ~  -70 to -130 km/s
+#
+# Observing mode -- controls which velocity windows are observed:
+#   "hvc_only" : HVC window only -- maximises HVC sensitivity per night
+#                Best choice when HVC detection is the primary goal.
+#                1281 pointings x ~2 min = ~43 hours = ~7 nights
+#   "both"     : standard HI + HVC windows -- doubles time per pointing
+#                Use when you also want a local HI map for context.
+#                1281 pointings x ~4 min = ~85 hours = ~14 nights
+#   "std_only" : standard HI only -- fastest, but misses HVCs entirely
+#
+# Radiometer equation analysis (Tsys=100K, delta_nu=134Hz, smooth=1km/s):
+#   sigma_1kms per visit = 100 / sqrt(134 x t_int x 7) = 0.47K  (t_int=61s)
+#   SNR(3K HVC)  = 3.0 / 0.47 = 6.4 sigma  -- detectable in single visit
+#   SNR(1K HVC)  = 1.0 / 0.47 = 2.1 sigma  -- need ~6 stacked visits
+#   SNR(0.5K HVC)= 0.5 / 0.47 = 1.1 sigma  -- need ~22 stacked visits
+#
+# Conclusion: focus on HVC window -- spend all time where the science is.
+OBSERVE_MODE = "hvc_only"   # "hvc_only" | "both" | "std_only"
+
+# Derived flag for backward compatibility
+OBSERVE_HVC = OBSERVE_MODE in ("hvc_only", "both")
+
+# LO centre frequency for a target velocity window centre
+def vel_to_lo(v_centre_kms):
+    """
+    Return the LO centre frequency [Hz] that places v_centre_kms at the
+    centre of the valid overlap bandwidth.
+
+    The HI line from gas at v_centre_kms is Doppler shifted to:
+        f_HI = HI_FREQ * (1 - v_centre_kms * 1e3 / C_MS)
+    Setting LO = f_HI puts that gas at DC in the band (zero offset).
+    The freq switching ON/OFF positions then bracket this centre by
+    +/- FREQ_OFFSET, giving a valid window of +/- ~42 km/s around v_centre.
+    """
+    return HI_FREQ * (1.0 - v_centre_kms * 1e3 / C_MS)
+
+# Velocity windows to observe at each pointing (label, v_centre_kms)
+# Each window covers v_centre +/- (FREQ_OFFSET/HI_FREQ * c) km/s
+# With FREQ_OFFSET=0.5 MHz: +/- 42 km/s per window
+VELOCITY_WINDOWS = [
+    ("std",  0.0),      # Local HI:    covers  -42 to  +42 km/s
+    ("hvc", -150.0),    # HVC Complex C/A: covers -192 to -108 km/s
+]
+# Empirically check DC dropout at hvc LO before relying on this:
+#   LO_ON  at hvc window = vel_to_lo(-150) - 0.5 MHz = ~1420.617 MHz
+#   LO_OFF at hvc window = vel_to_lo(-150) + 0.5 MHz = ~1421.617 MHz
+# These are different from the original 1421.406 MHz that had severe dropout.
+# Run the LO sweep test to confirm these are clean before a full session.
+#
+# With OBSERVE_HVC=False only "std" is observed -- use for initial survey pass.
 
 # Noise diode increments [K]
 T_ND_POL0 = 79.0
@@ -431,44 +513,63 @@ def build_freqs(center_hz, nfft=NSAMPLES_FFT, rate=SAMPLE_RATE):
     return baseband + center_hz
 
 
-# Number of blocks per USB transfer -- balances memory use vs call overhead.
-# 256 blocks x 16384 samples x 16 bytes (complex128) = 64 MB per batch -- safe on Pi.
-# Increasing this reduces USB call overhead; decreasing saves RAM.
-CAPTURE_BATCH = 256
+# Streaming FFT accumulation parameters.
+# Capture STREAM_BATCH raw samples at a time, FFT each immediately and
+# accumulate into the power spectrum. This avoids large memory allocations
+# while keeping USB call overhead low.
+# STREAM_BATCH x nsamples x 8 bytes (complex64) = memory per transfer:
+#   STREAM_BATCH=16: 16 x 16384 x 8 = 2 MB  -- very safe on Pi
+#   STREAM_BATCH=32: 32 x 16384 x 8 = 4 MB  -- still fine
+STREAM_BATCH = 16   # blocks per USB transfer -- small for low memory, streaming FFT
 
 
 def capture_spectrum(sdr, center_hz, nblocks, gain=GAIN,
                      nsamples=NSAMPLES_FFT, max_retries=3):
     """
-    Capture nblocks at center_hz and return averaged power spectrum.
+    Capture nblocks at center_hz using streaming FFT accumulation.
 
-    Captures in batches of CAPTURE_BATCH blocks to avoid both:
-      - 8192x individual USB call overhead (too slow)
-      - Single 2 GB allocation that exceeds Pi RAM (MemoryError)
-    Each batch is ~64 MB which fits comfortably on a 1 GB Pi.
+    Fetches STREAM_BATCH raw sample blocks at a time, immediately computes
+    and accumulates the FFT power spectrum, then discards the raw samples.
+    This keeps memory usage at ~2 MB per transfer regardless of nblocks,
+    and builds up the averaged spectrum incrementally -- equivalent to
+    stacking nblocks individual FFTs but with much lower peak memory.
+
+    Benefits over large batch capture:
+      - Memory: 2 MB per transfer vs 64-2000 MB for bulk capture
+      - Streaming: FFT runs continuously, no gap between capture and transform
+      - Resilient: each small batch can retry independently on USB errors
     """
     sdr.set_center_freq(center_hz)
     sdr.set_sample_rate(SAMPLE_RATE)
     sdr.set_gain(gain)
 
-    power_acc    = np.zeros(nsamples)
-    blocks_done  = 0
+    # Accumulate power spectrum in float64 to avoid overflow over many blocks
+    power_acc   = np.zeros(nsamples, dtype=np.float64)
+    blocks_done = 0
 
     while blocks_done < nblocks:
-        batch = min(CAPTURE_BATCH, nblocks - blocks_done)
+        batch = min(STREAM_BATCH, nblocks - blocks_done)
 
         for attempt in range(1, max_retries + 1):
             try:
+                # Fetch small batch of raw samples
                 result = sdr.capture_data(nsamples=nsamples, nblocks=batch)
-                v      = _parse_voltages(result, nsamples)
+                v      = _parse_voltages(result, nsamples)   # (batch, nsamples)
+
+                # FFT each block and accumulate power immediately
+                # Raw samples discarded after FFT -- no large array retained
                 for block in v:
-                    power_acc += np.abs(np.fft.fft(block)) ** 2
+                    spectrum   = np.fft.fft(block.astype(np.complex64))
+                    power_acc += np.abs(spectrum) ** 2
+
                 blocks_done += batch
-                break   # success -- move to next batch
+                break   # success
+
             except Exception as e:
-                print(f"[sdr] batch attempt {attempt}/{max_retries} failed: {e}")
+                print(f"[sdr] stream attempt {attempt}/{max_retries} "
+                      f"at block {blocks_done}: {e}")
                 if attempt < max_retries:
-                    time.sleep(0.5 * attempt)
+                    time.sleep(0.3 * attempt)
                 else:
                     raise RuntimeError(
                         f"capture_spectrum failed after {max_retries} attempts "
@@ -535,13 +636,9 @@ def freq_switch_pair(sdr, center_hz, offset_hz, nblocks,
         spec_on          : averaged ON spectrum
         spec_off_aligned : averaged OFF spectrum interpolated onto ON grid
     """
-    # LO_ON  is ABOVE HI_FREQ so HI falls at -offset from LO centre
-    # This places HI in the clean LEFT half of the RTL-SDR band,
-    # well away from the DC dropout at the LO centre frequency.
-    # LO_OFF is BELOW HI_FREQ so HI falls at +offset from LO centre
-    # -- also in the clean half but shifted out of the overlap window.
-    lo_on  = center_hz + offset_hz   # HI at -offset from centre (clean left half)
-    lo_off = center_hz - offset_hz   # HI at +offset from centre (shifted out)
+    # Standard convention: ON below HI_FREQ, OFF above HI_FREQ
+    lo_on  = center_hz - offset_hz
+    lo_off = center_hz + offset_hz
 
     # Check quit before starting
     if quit_event is not None and quit_event.is_set():
@@ -958,76 +1055,105 @@ def observe_pointing(pointing, dish, sdr0, sdr1, noise,
         v_lsr_corr = 0.0
         print(f"[obs] Warning: LSR correction unavailable ({e}), using 0")
 
-    # --- Frequency-switched spectra (both pols captured in parallel) ---
-    print("[obs] Capturing pol-0 and pol-1 freq-switched spectra in parallel...")
-    rf0, diff0, on0, off0, rf1, diff1, on1, off1 = freq_switch_pair_parallel(
-        sdr0, sdr1, HI_FREQ, FREQ_OFFSET, NBLOCKS_OBS,
-        quit_event=tracker._stop_evt   # reuse tracker stop event for clean exit
-    )
+    # --- cos(b) aperture correction (computed once per pointing) -------------
+    b_rad = np.radians(pointing['b'])
+    cosb  = max(np.cos(b_rad), 0.01)
+    print(f"[obs] b={pointing['b']:+.1f}deg  cos(b)={cosb:.3f}  "
+          f"aperture correction={1/cosb:.2f}x")
 
-    # Snapshot alt/az while tracker is still running (accurate mid-obs pointing)
-    with tracker.lock:
-        mid_altaz = tracker.current_altaz
+    # --- Multi-window velocity coverage loop ---------------------------------
+    # Observe at each velocity window to cover standard HI and HVC ranges.
+    # Each window shifts the LO to place a different LSR velocity range
+    # in the valid overlap bandwidth (+/- ~42 km/s per window).
+    # Select velocity windows based on observing mode
+    if OBSERVE_MODE == "hvc_only":
+        windows_to_observe = [w for w in VELOCITY_WINDOWS if w[0] == "hvc"]
+    elif OBSERVE_MODE == "std_only":
+        windows_to_observe = [w for w in VELOCITY_WINDOWS if w[0] == "std"]
+    else:   # "both"
+        windows_to_observe = VELOCITY_WINDOWS
+    print(f"[obs] Observing {len(windows_to_observe)} velocity window(s): "
+          f"{[w[0] for w in windows_to_observe]}")
+
+    fnames = []
+    Tsys0  = cal_data.get('Tsys_pol0', 100.0)
+    Tsys1  = cal_data.get('Tsys_pol1', 100.0)
+
+    for win_label, v_centre_kms in windows_to_observe:
+
+        if tracker._stop_evt.is_set():
+            print(f"[obs] Quit -- stopping after windows so far")
+            break
+
+        lo_centre      = vel_to_lo(v_centre_kms)
+        vel_window_kms = (FREQ_OFFSET / HI_FREQ) * C_MS / 1e3
+        is_hvc         = abs(v_centre_kms) >= 90.0
+
+        print(f"[obs] Window '{win_label}': v_centre={v_centre_kms:+.0f} km/s  "
+              f"range=[{v_centre_kms-vel_window_kms:+.0f}, "
+              f"{v_centre_kms+vel_window_kms:+.0f}] km/s  "
+              f"LO={lo_centre/1e6:.4f} MHz")
+
+        rf0, diff0, on0, off0, rf1, diff1, on1, off1 = freq_switch_pair_parallel(
+            sdr0, sdr1, lo_centre, FREQ_OFFSET, NBLOCKS_OBS,
+            quit_event=tracker._stop_evt
+        )
+
+        with tracker.lock:
+            mid_altaz = tracker.current_altaz
+        jd_win = timing.julian_date()
+
+        clean0, _ = clean_spectrum(diff0)
+        clean1, _ = clean_spectrum(diff1)
+
+        n    = len(off0)
+        band = slice(n // 4, 3 * n // 4)
+        P0_off_mean = np.nanmean(off0[band]) or 1.0
+        P1_off_mean = np.nanmean(off1[band]) or 1.0
+        if not np.isfinite(P0_off_mean): P0_off_mean = 1.0
+        if not np.isfinite(P1_off_mean): P1_off_mean = 1.0
+
+        T_ant0      = Tsys0 * clean0 / P0_off_mean
+        T_ant1      = Tsys1 * clean1 / P1_off_mean
+        T_ant0_cosb = T_ant0 / cosb
+        T_ant1_cosb = T_ant1 / cosb
+
+        vel_kms = velocity_axis(rf0, v_lsr_correction_kms=v_lsr_corr)
+
+        extra = dict(
+            alt_deg_mid          = mid_altaz[0],
+            az_deg_mid           = mid_altaz[1],
+            alt_deg_start        = alt0,
+            az_deg_start         = az0,
+            jd_obs_start         = jd_obs_start,
+            noise_diode          = "off",
+            v_lsr_correction_kms = v_lsr_corr,
+            pll_settle_sec       = PLL_SETTLE_SEC,
+            win_label            = win_label,
+            v_centre_kms         = v_centre_kms,
+            lo_centre_hz         = lo_centre,
+            vel_window_kms       = vel_window_kms,
+            is_hvc_window        = is_hvc,
+            cosb                 = cosb,
+            cosb_correction      = 1.0 / cosb,
+            on0  = on0, off0 = off0, on1 = on1, off1 = off1,
+            T_ant0_cosb = T_ant0_cosb,
+            T_ant1_cosb = T_ant1_cosb,
+        )
+
+        win_fname = save_pointing(
+            pointing, jd_win, lo_centre,
+            rf0, T_ant0, rf1, T_ant1,
+            cal_data, data_dir=data_dir,
+            tag=f"obs_{win_label}", extra_meta=extra
+        )
+        fnames.append(win_fname)
+        print(f"[obs] '{win_label}' saved: {win_fname.name}")
 
     tracker.stop()
-    jd_obs = timing.julian_date()         # end of integration
+    jd_obs = timing.julian_date()
+    fname  = fnames[0] if fnames else None
 
-    # --- Baseline cleaning ---
-    clean0, base0 = clean_spectrum(diff0)
-    clean1, base1 = clean_spectrum(diff1)
-
-    # --- Scale to antenna temperature ---
-    # Use the observation OFF spectrum mean for normalisation -- this is
-    # more reliable than the noise diode cal OFF spectrum which may be
-    # from a different time and gain state.
-    # T_ant = Tsys * (ON - OFF) / mean(OFF)
-    Tsys0 = cal_data.get('Tsys_pol0', 100.0)
-    Tsys1 = cal_data.get('Tsys_pol1', 100.0)
-
-    # Use band-centre (middle 50%) of the observation OFF spectrum
-    n = len(off0)
-    band = slice(n // 4, 3 * n // 4)
-    P0_off_mean = np.nanmean(off0[band])
-    P1_off_mean = np.nanmean(off1[band])
-
-    # Guard against zero/NaN division
-    if not np.isfinite(P0_off_mean) or P0_off_mean == 0:
-        print("[obs] Warning: P0_off_mean invalid, using 1.0")
-        P0_off_mean = 1.0
-    if not np.isfinite(P1_off_mean) or P1_off_mean == 0:
-        print("[obs] Warning: P1_off_mean invalid, using 1.0")
-        P1_off_mean = 1.0
-
-    T_ant0 = Tsys0 * clean0 / P0_off_mean
-    T_ant1 = Tsys1 * clean1 / P1_off_mean
-
-    print(f"[obs] P0_off_mean={P0_off_mean:.3e}  P1_off_mean={P1_off_mean:.3e}")
-
-    # --- Velocity axis (LSR-corrected) ---
-    vel_kms = velocity_axis(rf0, v_lsr_correction_kms=v_lsr_corr)
-
-    extra = dict(
-        alt_deg_mid        = mid_altaz[0],
-        az_deg_mid         = mid_altaz[1],
-        alt_deg_start      = alt0,
-        az_deg_start       = az0,
-        jd_obs_start       = jd_obs_start,
-        noise_diode        = "off",
-        v_lsr_correction_kms = v_lsr_corr,   # Earth motion correction applied to velocity axis
-        pll_settle_sec     = PLL_SETTLE_SEC,
-        # Raw ON/OFF spectra for flexible post-processing baseline removal
-        on0  = on0,
-        off0 = off0,
-        on1  = on1,
-        off1 = off1,
-    )
-
-    fname = save_pointing(
-        pointing, jd_obs, HI_FREQ,
-        rf0, T_ant0, rf1, T_ant1,
-        cal_data, data_dir=data_dir, tag="obs", extra_meta=extra
-    )
-    # velocity axis now stored inside the .npz -- no separate _vel.npy needed
 
     # --- Quick-look SNR estimate printed to terminal ---
     valid = np.isfinite(T_ant0) & (np.abs(T_ant0) > 0)
@@ -1088,7 +1214,11 @@ def sort_by_elevation_priority(pending, jd):
 
     Returns a new sorted list of (pointing, alt_deg) tuples.
     """
-    RISING_THRESHOLD_DEG = 50.0   # deg clearance above local horizon
+    RISING_THRESHOLD_DEG = 45.0   # deg clearance above local horizon
+    # With MIN_EL=35deg all visible pointings have >30deg clearance,
+    # so threshold should be well above 20deg to meaningfully split tiers.
+    # Pointings <45deg clearance are more urgent (setting sooner);
+    # pointings >45deg clearance are safe and observed highest-first.
 
     tier1 = []   # low, urgent -- observe first
     tier2 = []   # high, safe  -- observe after tier1, highest first
@@ -1186,6 +1316,41 @@ def run_survey(resume=True, dry_run=False, resort_every=10):
     noise = None
     sdr0  = None
     sdr1  = None
+
+    # -- Pre-session radiometer summary --------------------------------------
+    t_block     = NSAMPLES_FFT / SAMPLE_RATE
+    t_int       = NBLOCKS_OBS * t_block
+    delta_nu    = SAMPLE_RATE / NSAMPLES_FFT
+    N_smooth    = max(1, int(1e3 / (SAMPLE_RATE / NSAMPLES_FFT / HI_FREQ * C_MS / 1e3)))
+    Tsys_est    = 100.0   # K -- rough estimate, updated after calibration
+    sigma_chan  = Tsys_est / (delta_nu * t_int) ** 0.5
+    sigma_1kms  = sigma_chan / N_smooth ** 0.5
+    win_labels  = ([w[0] for w in VELOCITY_WINDOWS if w[0] == "hvc"]
+                   if OBSERVE_MODE == "hvc_only" else
+                   [w[0] for w in VELOCITY_WINDOWS if w[0] == "std"]
+                   if OBSERVE_MODE == "std_only" else
+                   [w[0] for w in VELOCITY_WINDOWS])
+    t_per_point = t_int * len(win_labels) * 2   # x2 for ON+OFF
+    t_total_hr  = 1281 * (t_per_point + 30) / 3600   # +30s slew overhead
+
+    sep = "=" * 60
+    print(f"\n{sep}")
+    print(f"  HI 21-cm Survey -- Session Parameters")
+    print(f"{sep}")
+    print(f"  Mode           : {OBSERVE_MODE}")
+    print(f"  Windows        : {win_labels}")
+    print(f"  NBLOCKS_OBS    : {NBLOCKS_OBS}  ({t_int:.0f}s per LO position)")
+    print(f"  Time/pointing  : ~{t_per_point/60:.1f} min")
+    print(f"  Full survey    : ~{t_total_hr:.0f} hours  (~{t_total_hr/6:.0f} nights at 6hr/night)")
+    print(f"\n  Radiometer equation (Tsys~{Tsys_est:.0f}K, smooth to 1 km/s):")
+    print(f"    sigma/channel  = {sigma_chan:.2f} K")
+    print(f"    sigma (1 km/s) = {sigma_1kms:.2f} K  (smoothed over ~{N_smooth} channels)")
+    for T_hvc in [3.0, 1.0, 0.5]:
+        snr = T_hvc / sigma_1kms
+        n_visits = max(1, int((5.0 / snr) ** 2 + 0.5))
+        print(f"    SNR({T_hvc:.1f}K HVC)  = {snr:.1f} sigma/visit"
+              f"  -> need ~{n_visits} visit(s) for 5-sigma")
+    print(f"{sep}\n")
 
     print("[init] Connecting to Leuschner dish...")
     dish  = leusch.LeuschTelescope()
@@ -1409,6 +1574,10 @@ def main():
                         help='Ignore progress file and start fresh')
     parser.add_argument('--dry-run', action='store_true',
                         help='Step through grid without moving telescope or capturing data')
+    parser.add_argument('--mode', choices=['hvc_only', 'both', 'std_only'],
+                        default=None,
+                        help='Observing mode: hvc_only (default), both, or std_only. '
+                             'Overrides OBSERVE_MODE constant in script.')
     parser.add_argument('--resort-every', type=int, default=10, metavar='N',
                         help='Re-sort by elevation every N successful observations (default 10)')
     parser.add_argument('--rebuild-progress', action='store_true',
@@ -1425,6 +1594,12 @@ def main():
     if args.plan:
         print_visibility_windows(grid, hours=14, step_min=5)
         return
+
+    # Override OBSERVE_MODE if --mode was passed on command line
+    if args.mode is not None:
+        import observe_hi_survey as _self
+        _self.OBSERVE_MODE = args.mode
+        _self.OBSERVE_HVC  = args.mode in ("hvc_only", "both")
 
     run_survey(resume=args.resume, dry_run=args.dry_run,
                resort_every=args.resort_every)
