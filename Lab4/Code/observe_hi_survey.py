@@ -59,7 +59,7 @@ ALT_M    =  leo.alt     # meters
 
 # -- Receiver / SDR constants -------------------------------------------------
 HI_FREQ      = 1420.405751e6   # HI rest frequency [Hz]
-C_MS         = 299_792_458.0   # speed of light [m/s]
+C_MS         = 299792458.0   # speed of light [m/s]
 
 SAMPLE_RATE  = 2.2e6           # [Hz]  2.2 MHz -- actual rate the Pi RTL-SDR supports
 NSAMPLES_FFT = 2**14           # 16384 pts -> deltanu ~= 153 Hz -> deltav ~= 32 m/s  (good for Gaussian fitting)
@@ -166,7 +166,13 @@ T_ND_POL1 = 58.0
 CAL_EVERY_N = 5
 
 # Min elevation for observing [deg]
-MIN_EL = 35.0   # confirmed: all 1281 survey pointings still observable above 35deg
+MIN_EL = 30.0   # confirmed: all 1281 survey pointings still observable above 35deg
+
+# Scheduling elevation buffer [deg]
+# A pointing is only scheduled if it will remain above MIN_EL for the full
+# integration time. The scheduler checks elevation at t=now AND t=now+t_int.
+TRACK_SOFT_MARGIN = 2.0   # deg below MIN_EL tracker will still follow target
+SCHED_EL_BUFFER   = 3.0   # deg above MIN_EL required at START of observation
 
 # Beam FWHM ~= 4deg, Nyquist spacing = 2deg
 GRID_SPACING_DEG = 2.0
@@ -427,22 +433,36 @@ def rebuild_global_progress():
 # 3.  VISIBILITY PLANNING
 # -----------------------------------------------------------------------------
 
-def pointing_is_visible(ra_deg, dec_deg, jd, min_el=MIN_EL):
+def pointing_is_visible(ra_deg, dec_deg, jd, min_el=MIN_EL,
+                        check_future=True):
     """
-    Return (alt, az) if pointing is visible and unobstructed, else None.
+    Return (alt, az) if pointing is schedulable, else None.
 
-    Checks two conditions:
-      1. alt >= min_el  (mathematical horizon limit)
-      2. alt >= horizon_clearance(az)  (physical obstruction mask, if enabled)
-
-    A pointing that clears the mathematical horizon but sits behind a hill
-    will return None and be skipped or deferred by the scheduler.
+    Checks three conditions:
+      1. alt >= min_el + SCHED_EL_BUFFER at current time
+         (buffer ensures target stays above MIN_EL through integration)
+      2. alt >= min_el at jd + integration time
+         (confirms target does not drift below limit mid-observation)
+      3. alt >= horizon_clearance(az) (physical obstruction mask)
     """
     alt, az = coord.get_altaz(ra_deg, dec_deg, jd,
                               LAT_DEG, LON_DEG, ALT_M,
                               equinox='J2000')
-    if alt < min_el:
+
+    # Must be above MIN_EL + buffer at start
+    if alt < min_el + SCHED_EL_BUFFER:
         return None
+
+    # Check elevation at end of integration
+    if check_future:
+        t_int_days = (NBLOCKS_OBS * NSAMPLES_FFT / SAMPLE_RATE * 2) / 86400
+        jd_end     = jd + t_int_days
+        alt_end, _ = coord.get_altaz(ra_deg, dec_deg, jd_end,
+                                     LAT_DEG, LON_DEG, ALT_M,
+                                     equinox='J2000')
+        if alt_end < min_el:
+            return None
+
     if USE_HORIZON_MASK:
         clearance = horizon_clearance(az)
         if alt < clearance:
@@ -664,9 +684,6 @@ def freq_switch_pair(sdr, center_hz, offset_hz, nblocks,
     sdr.set_gain(GAIN)
     time.sleep(PLL_SETTLE_SEC)   # single settle for this LO position
     rf_off, spec_off = capture_spectrum(sdr, lo_off, nblocks, nsamples=nsamples)
-
-    rf_on  = build_freqs(lo_on,  nsamples)
-    rf_off = build_freqs(lo_off, nsamples)
 
     # Interpolate OFF onto ON frequency grid
     interp_fn        = interp1d(rf_off, spec_off, bounds_error=False,
@@ -986,15 +1003,20 @@ class TelescopeTracker:
                     self._ra, self._dec, jd,
                     LAT_DEG, LON_DEG, ALT_M, equinox='J2000'
                 )
-                if alt >= MIN_EL:
+                soft_limit = MIN_EL - TRACK_SOFT_MARGIN
+                if alt >= soft_limit:
                     with _dish_lock:
                         self.dish.point(alt, az)
                     with self.lock:
                         self.current_altaz = (alt, az)
-                    print(f"[tracker] alt={alt:.2f}deg  az={az:.2f}deg")
+                    if alt < MIN_EL:
+                        print(f"[tracker] alt={alt:.2f}deg  az={az:.2f}deg"
+                              f"  (soft tracking below MIN_EL)")
+                    else:
+                        print(f"[tracker] alt={alt:.2f}deg  az={az:.2f}deg")
                 else:
-                    print(f"[tracker] el={alt:.1f}deg below limit -- "
-                          "holding position.")
+                    print(f"[tracker] el={alt:.1f}deg below soft limit"
+                          f" ({soft_limit:.1f}deg) -- holding position.")
             except Exception as e:
                 print(f"[tracker] Warning: {e}")
             self._stop_evt.wait(self.update_sec)
