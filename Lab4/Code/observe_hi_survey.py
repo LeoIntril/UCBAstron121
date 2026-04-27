@@ -722,7 +722,7 @@ def freq_switch_pair_parallel(sdr0, sdr1, center_hz, offset_hz, nblocks,
                 time.sleep(PLL_SETTLE_SEC)
             # Long capture runs without holding the lock -- only short
             # set_* calls inside capture_spectrum need serialisation
-            results[key] = freq_switch_pair(sdr, center_hz, offset_hz,
+            results[key] = freq_switch_pair(sdr, center_hz, offset_hz,   #Move to process outside of this thread
                                             nblocks, nsamples,
                                             quit_event=quit_event)
         except Exception as e:
@@ -734,7 +734,7 @@ def freq_switch_pair_parallel(sdr0, sdr1, center_hz, offset_hz, nblocks,
                           args=('pol1', sdr1, _sdr1_lock), daemon=True)
 
     t0.start()
-    time.sleep(0.25)   # stagger start -- avoids both SDRs hitting USB at t=0
+    
     t1.start()
 
     t0.join()
