@@ -35,7 +35,6 @@ import numpy as np
 from pathlib import Path
 from datetime import datetime, timezone
 from scipy.signal import medfilt
-from scipy.interpolate import interp1d
 
 # -- ugradio imports ----------------------------------------------------------
 import ugradio
@@ -62,14 +61,17 @@ HI_FREQ      = 1420.405751e6   # HI rest frequency [Hz]
 C_MS         = 299792458.0   # speed of light [m/s]
 
 SAMPLE_RATE  = 2.2e6           # [Hz]  2.2 MHz -- actual rate the Pi RTL-SDR supports
-NSAMPLES_FFT = 2**14           # 16384 pts -> deltanu ~= 153 Hz -> deltav ~= 32 m/s  (good for Gaussian fitting)
+NSAMPLES_FFT = 2**10           # 1024 pts -> deltanu ~= 2148 Hz -> deltav ~= 0.45 km/s
+                               # 22x faster FFT than 2**14, still sub-km/s resolution for HVC
 # Integration time per pointing:
 #   one block = NSAMPLES_FFT / SAMPLE_RATE = 16384 / 2.5e6 ~= 6.55 ms
 #   NBLOCKS_OBS blocks per freq-switch position x 2 positions x 2 pols
 #   -> total wall time ~= NBLOCKS_OBS x 6.55 ms x 4 ~= NBLOCKS_OBS x 26 ms
 #   NBLOCKS_OBS = 4096  ->  ~107 s/position ->  ~7 min total per pointing  (current)  (ok)
 #   NBLOCKS_OBS = 4096  ->  ~107 s/position ->  ~7 min total per pointing  (current)
-NBLOCKS_OBS  = 8192            # blocks per SDR per freq-switch half (~2 min/pointing)
+NBLOCKS_OBS  = 32768           # blocks per SDR per freq-switch half
+                               # 32768 x 1024 / 2.2e6 = 15s per window
+                               # ON+OFF+slew ~70s/pointing -> 1281 x 70s = 25hrs
 NBLOCKS_CAL  = 128             # blocks for noise-diode calibration (~1.7 s, plenty for Y-factor)
 GAIN         = 20              # SDR gain [dB] -- 19.7dB actual (nearest valid step)
 FREQ_OFFSET  = 0.5e6           # LO frequency-switch offset [Hz]
@@ -166,7 +168,7 @@ T_ND_POL1 = 58.0
 CAL_EVERY_N = 5
 
 # Min elevation for observing [deg]
-MIN_EL = 30.0   # confirmed: all 1281 survey pointings still observable above 35deg
+MIN_EL = 35.0   # confirmed: all 1281 survey pointings still observable above 35deg
 
 # Scheduling elevation buffer [deg]
 # A pointing is only scheduled if it will remain above MIN_EL for the full
@@ -540,7 +542,9 @@ def build_freqs(center_hz, nfft=NSAMPLES_FFT, rate=SAMPLE_RATE):
 # STREAM_BATCH x nsamples x 8 bytes (complex64) = memory per transfer:
 #   STREAM_BATCH=16: 16 x 16384 x 8 = 2 MB  -- very safe on Pi
 #   STREAM_BATCH=32: 32 x 16384 x 8 = 4 MB  -- still fine
-STREAM_BATCH = 16   # blocks per USB transfer -- small for low memory, streaming FFT
+STREAM_BATCH = 512  # blocks per USB transfer
+                    # 512 x 1024 samples x 8 bytes = 4 MB -- safe on Pi
+                    # larger batch = fewer USB calls = faster throughput
 
 
 def capture_spectrum(sdr, center_hz, nblocks, gain=GAIN,
@@ -559,9 +563,9 @@ def capture_spectrum(sdr, center_hz, nblocks, gain=GAIN,
       - Streaming: FFT runs continuously, no gap between capture and transform
       - Resilient: each small batch can retry independently on USB errors
     """
-    sdr.set_center_freq(center_hz)
-    sdr.set_sample_rate(SAMPLE_RATE)
-    sdr.set_gain(gain)
+    sdr.set_center_freq(center_hz)  # only freq changes per call
+    # set_sample_rate and set_gain fixed at init -- not repeated
+
 
     # Accumulate power spectrum in float64 to avoid overflow over many blocks
     power_acc   = np.zeros(nsamples, dtype=np.float64)
@@ -602,21 +606,18 @@ def capture_spectrum(sdr, center_hz, nblocks, gain=GAIN,
 
 
 def _parse_voltages(result, nsamples):
-    """Convert raw SDR output to complex array shape (nblocks, nsamples)."""
-    if isinstance(result, dict):
-        v = np.array(next(
-            val for val in result.values()
-            if isinstance(val, (list, np.ndarray))
-        ))
-    else:
-        v = np.array(result)
-
+    """
+    Convert raw SDR output to complex array shape (nblocks, nsamples).
+    sdr.capture_data() instance method returns (nblocks, nsamples, 2)
+    where [...,0]=I and [...,1]=Q.
+    """
+    v = np.asarray(result)
     if v.ndim == 3 and v.shape[2] == 2:
-        v = v[..., 0] + 1j * v[..., 1]
-    elif v.ndim == 1:
-        n = len(v) // nsamples
-        v = v[: n * nsamples].reshape(n, nsamples)
-    return v.astype(np.complex64)
+        return (v[..., 0] + 1j * v[..., 1]).astype(np.complex64)
+    if v.ndim == 2:
+        return v.astype(np.complex64)
+    raise ValueError(f"Unexpected SDR output shape: {v.shape}")
+
 
 
 # -----------------------------------------------------------------------------
@@ -667,8 +668,8 @@ def freq_switch_pair(sdr, center_hz, offset_hz, nblocks,
     # --- All ON blocks (one PLL settle before capture starts) ---
     print(f"[freq_switch] ON  position ({lo_on/1e6:.4f} MHz)...")
     sdr.set_center_freq(lo_on)
-    sdr.set_sample_rate(SAMPLE_RATE)
-    sdr.set_gain(GAIN)
+    # sample_rate and gain constant -- only center_freq changes
+
     time.sleep(PLL_SETTLE_SEC)   # single settle for this LO position
     rf_on,  spec_on  = capture_spectrum(sdr, lo_on,  nblocks, nsamples=nsamples)
 
@@ -680,18 +681,18 @@ def freq_switch_pair(sdr, center_hz, offset_hz, nblocks,
     # --- All OFF blocks (one PLL settle before capture starts) ---
     print(f"[freq_switch] OFF position ({lo_off/1e6:.4f} MHz)...")
     sdr.set_center_freq(lo_off)
-    sdr.set_sample_rate(SAMPLE_RATE)
-    sdr.set_gain(GAIN)
+    # sample_rate and gain constant -- only center_freq changes
+
     time.sleep(PLL_SETTLE_SEC)   # single settle for this LO position
     rf_off, spec_off = capture_spectrum(sdr, lo_off, nblocks, nsamples=nsamples)
 
-    # Interpolate OFF onto ON frequency grid
-    interp_fn        = interp1d(rf_off, spec_off, bounds_error=False,
-                                fill_value=np.nan)
-    spec_off_aligned = interp_fn(rf_on)
-
-    T_diff = spec_on - spec_off_aligned
-    return rf_on, T_diff, spec_on, spec_off_aligned
+    # Return raw ON and OFF on their own native frequency grids.
+    # Alignment is done in post-processing where the full context is available.
+    # Previously interp1d was used here but it introduced NaNs wherever the
+    # OFF grid extended beyond the ON grid edges -- corrupting nearly half
+    # the spec_off_pol0 array. Raw grids are clean and give more flexibility.
+    # T_diff is computed over the overlap region only in post-processing.
+    return rf_on, spec_on, rf_off, spec_off
 
 
 # -----------------------------------------------------------------------------
@@ -702,41 +703,123 @@ def freq_switch_pair_parallel(sdr0, sdr1, center_hz, offset_hz, nblocks,
                                nsamples=NSAMPLES_FFT,
                                quit_event=None):
     """
-    Run freq_switch_pair on both SDRs with staggered starts to avoid
-    simultaneous USB calls which can deadlock librtlsdr on the Pi.
-    Each SDR runs its own block-switched freq_switch_pair call.
-    Staggered starts avoid simultaneous USB calls.
-    quit_event is passed through for a clean stop.
+    Producer-consumer parallel capture for both SDR polarisations.
+
+    Two producer threads capture raw voltage blocks from each SDR and
+    push them onto per-SDR queues. Two consumer threads pull blocks
+    from the queues, FFT them, and accumulate the power spectrum.
+    This decouples USB I/O from FFT computation so both run concurrently
+    -- the Pi's USB controller and CPU are both kept busy simultaneously
+    rather than alternating between capture and computation.
+
+    Architecture:
+      producer0 (SDR0) -> queue0 -> consumer0 (FFT+accumulate pol0)
+      producer1 (SDR1) -> queue1 -> consumer1 (FFT+accumulate pol1)
+    Both producer-consumer pairs run in parallel.
     """
+    import queue as qmod
+
+    lo_on  = center_hz - offset_hz
+    lo_off = center_hz + offset_hz
+
     results = {}
     errors  = {}
 
-    def capture(key, sdr, sdr_lock):
+    def run_one_sdr(key, sdr, sdr_lock):
+        """Producer-consumer pipeline for one SDR."""
         try:
-            # Each SDR uses its own lock -- serialises calls per device
-            # but allows both to run concurrently since they are independent
             with sdr_lock:
-                # Initial setup under lock, then release for the long capture
-                sdr.set_gain(GAIN)
-                sdr.set_sample_rate(SAMPLE_RATE)
-                time.sleep(PLL_SETTLE_SEC)
-            # Long capture runs without holding the lock -- only short
-            # set_* calls inside capture_spectrum need serialisation
-            results[key] = freq_switch_pair(sdr, center_hz, offset_hz,   #Move to process outside of this thread
-                                            nblocks, nsamples,
-                                            quit_event=quit_event)
+                pass   # gain and sample_rate set once at SDR init
+
+            # ON position
+            sdr.set_center_freq(lo_on)
+            time.sleep(PLL_SETTLE_SEC * 2)
+            _ = sdr.capture_data(nsamples=nsamples, nblocks=4)  # warm-up
+
+            # Producer-consumer for ON capture
+            on_q   = qmod.Queue(maxsize=8)  # bounded: producer blocks if consumer slow
+            on_acc = np.zeros(nsamples, dtype=np.float64)
+
+            def produce_on():
+                remaining = nblocks
+                while remaining > 0:
+                    if quit_event is not None and quit_event.is_set():
+                        on_q.put(None); return
+                    batch = min(STREAM_BATCH, remaining)
+                    raw   = sdr.capture_data(nsamples=nsamples, nblocks=batch)
+                    on_q.put(raw)
+                    remaining -= batch
+                on_q.put(None)   # sentinel
+
+            def consume_on():
+                while True:
+                    raw = on_q.get()
+                    if raw is None: break
+                    v = _parse_voltages(raw, nsamples)
+                    for block in v:
+                        on_acc += np.abs(np.fft.fft(
+                            block.astype(np.complex64))) ** 2
+
+            pt = threading.Thread(target=produce_on, daemon=True)
+            ct = threading.Thread(target=consume_on, daemon=True)
+            pt.start(); ct.start()
+            pt.join();  ct.join()
+
+            if quit_event is not None and quit_event.is_set():
+                raise RuntimeError("quit during ON capture")
+
+            spec_on = np.fft.fftshift(on_acc / nblocks)
+            rf_on   = build_freqs(lo_on, nsamples)
+
+            # OFF position
+            sdr.set_center_freq(lo_off)
+            time.sleep(PLL_SETTLE_SEC * 2)
+            _ = sdr.capture_data(nsamples=nsamples, nblocks=4)  # warm-up
+
+            off_q   = qmod.Queue(maxsize=8)
+            off_acc = np.zeros(nsamples, dtype=np.float64)
+
+            def produce_off():
+                remaining = nblocks
+                while remaining > 0:
+                    if quit_event is not None and quit_event.is_set():
+                        off_q.put(None); return
+                    batch = min(STREAM_BATCH, remaining)
+                    raw   = sdr.capture_data(nsamples=nsamples, nblocks=batch)
+                    off_q.put(raw)
+                    remaining -= batch
+                off_q.put(None)
+
+            def consume_off():
+                while True:
+                    raw = off_q.get()
+                    if raw is None: break
+                    v = _parse_voltages(raw, nsamples)
+                    for block in v:
+                        off_acc += np.abs(np.fft.fft(
+                            block.astype(np.complex64))) ** 2
+
+            pt = threading.Thread(target=produce_off, daemon=True)
+            ct = threading.Thread(target=consume_off, daemon=True)
+            pt.start(); ct.start()
+            pt.join();  ct.join()
+
+            spec_off = np.fft.fftshift(off_acc / nblocks)
+            rf_off   = build_freqs(lo_off, nsamples)
+
+            results[key] = (rf_on, spec_on, rf_off, spec_off)
+
         except Exception as e:
             errors[key] = e
 
-    t0 = threading.Thread(target=capture,
+    # Run both SDRs in parallel -- staggered start avoids simultaneous USB init
+    t0 = threading.Thread(target=run_one_sdr,
                           args=('pol0', sdr0, _sdr0_lock), daemon=True)
-    t1 = threading.Thread(target=capture,
+    t1 = threading.Thread(target=run_one_sdr,
                           args=('pol1', sdr1, _sdr1_lock), daemon=True)
-
     t0.start()
-    
+    time.sleep(0.25)
     t1.start()
-
     t0.join()
     t1.join()
 
@@ -745,9 +828,9 @@ def freq_switch_pair_parallel(sdr0, sdr1, center_hz, offset_hz, nblocks,
             print(f"[parallel] ERROR on {key}: {e}")
         raise RuntimeError(f"Parallel SDR capture failed: {errors}")
 
-    rf0, diff0, on0, off0 = results['pol0']
-    rf1, diff1, on1, off1 = results['pol1']
-    return rf0, diff0, on0, off0, rf1, diff1, on1, off1
+    rf_on0, on0, rf_off0, off0 = results['pol0']
+    rf_on1, on1, rf_off1, off1 = results['pol1']
+    return rf_on0, on0, rf_off0, off0, rf_on1, on1, rf_off1, off1
 
 
 def capture_spectrum_parallel(sdr0, sdr1, center_hz, nblocks,
@@ -1116,31 +1199,34 @@ def observe_pointing(pointing, dish, sdr0, sdr1, noise,
               f"{v_centre_kms+vel_window_kms:+.0f}] km/s  "
               f"LO={lo_centre/1e6:.4f} MHz")
 
-        rf0, diff0, on0, off0, rf1, diff1, on1, off1 = freq_switch_pair_parallel(
+        rf_on0, on0, rf_off0, off0, rf_on1, on1, rf_off1, off1 = freq_switch_pair_parallel(
             sdr0, sdr1, lo_centre, FREQ_OFFSET, NBLOCKS_OBS,
             quit_event=tracker._stop_evt
         )
+        rf0 = rf_on0   # primary freq axis (ON position, pol0)
 
         with tracker.lock:
             mid_altaz = tracker.current_altaz
         jd_win = timing.julian_date()
 
-        clean0, _ = clean_spectrum(diff0)
-        clean1, _ = clean_spectrum(diff1)
-
+        # T_ant scaling using OFF spectrum mean for normalisation
+        # Both ON and OFF are on their own native frequency grids --
+        # alignment is done in post-processing.
         n    = len(off0)
         band = slice(n // 4, 3 * n // 4)
-        P0_off_mean = np.nanmean(off0[band]) or 1.0
-        P1_off_mean = np.nanmean(off1[band]) or 1.0
-        if not np.isfinite(P0_off_mean): P0_off_mean = 1.0
-        if not np.isfinite(P1_off_mean): P1_off_mean = 1.0
+        P0_off_mean = np.nanmean(off0[band])
+        P1_off_mean = np.nanmean(off1[band])
+        if not np.isfinite(P0_off_mean) or P0_off_mean == 0: P0_off_mean = 1.0
+        if not np.isfinite(P1_off_mean) or P1_off_mean == 0: P1_off_mean = 1.0
 
-        T_ant0      = Tsys0 * clean0 / P0_off_mean
-        T_ant1      = Tsys1 * clean1 / P1_off_mean
+        # Scaled ON spectrum as primary data product
+        # T_ant = Tsys * ON / mean(OFF)  -- baseline removal done in post
+        T_ant0      = Tsys0 * on0 / P0_off_mean
+        T_ant1      = Tsys1 * on1 / P1_off_mean
         T_ant0_cosb = T_ant0 / cosb
         T_ant1_cosb = T_ant1 / cosb
 
-        vel_kms = velocity_axis(rf0, v_lsr_correction_kms=v_lsr_corr)
+        vel_kms = velocity_axis(rf_on0, v_lsr_correction_kms=v_lsr_corr)
 
         extra = dict(
             alt_deg_mid          = mid_altaz[0],
@@ -1154,18 +1240,24 @@ def observe_pointing(pointing, dish, sdr0, sdr1, noise,
             win_label            = win_label,
             v_centre_kms         = v_centre_kms,
             lo_centre_hz         = lo_centre,
+            lo_on_hz             = lo_centre - FREQ_OFFSET,
+            lo_off_hz            = lo_centre + FREQ_OFFSET,
             vel_window_kms       = vel_window_kms,
             is_hvc_window        = is_hvc,
             cosb                 = cosb,
             cosb_correction      = 1.0 / cosb,
-            on0  = on0, off0 = off0, on1 = on1, off1 = off1,
-            T_ant0_cosb = T_ant0_cosb,
-            T_ant1_cosb = T_ant1_cosb,
+            # Raw ON and OFF on their own grids -- no interpolation applied
+            spec_on_pol0  = on0,   spec_off_pol0 = off0,
+            spec_on_pol1  = on1,   spec_off_pol1 = off1,
+            rf_hz_on_pol0 = rf_on0, rf_hz_off_pol0 = rf_off0,
+            rf_hz_on_pol1 = rf_on1, rf_hz_off_pol1 = rf_off1,
+            T_ant0_cosb   = T_ant0_cosb,
+            T_ant1_cosb   = T_ant1_cosb,
         )
 
         win_fname = save_pointing(
             pointing, jd_win, lo_centre,
-            rf0, T_ant0, rf1, T_ant1,
+            rf_on0, T_ant0, rf_on1, T_ant1,
             cal_data, data_dir=data_dir,
             tag=f"obs_{win_label}", extra_meta=extra
         )
