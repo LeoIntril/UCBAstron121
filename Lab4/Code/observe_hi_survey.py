@@ -47,6 +47,12 @@ from ugradio import leo, leusch, timing, coord
 _sdr0_lock = threading.Lock()
 _sdr1_lock = threading.Lock()
 
+# Global libusb lock -- serialises ALL sdr.capture_data() calls across
+# both SDRs. libusb uses a global mutex internally and crashes with an
+# assertion failure if two threads hit it simultaneously even on different
+# USB devices. This lock ensures only one capture_data call runs at a time.
+_usb_lock = threading.Lock()
+
 # Dish lock: prevents tracker from sending a point() command while
 # observe_pointing is in the middle of the initial point/settle sequence.
 _dish_lock = threading.Lock()
@@ -168,13 +174,12 @@ T_ND_POL1 = 58.0
 CAL_EVERY_N = 5
 
 # Min elevation for observing [deg]
-MIN_EL = 35.0   # confirmed: all 1281 survey pointings still observable above 35deg
+MIN_EL = 30.0   # hard lower limit -- Leuschner can observe reliably to 30deg
 
-# Scheduling elevation buffer [deg]
-# A pointing is only scheduled if it will remain above MIN_EL for the full
-# integration time. The scheduler checks elevation at t=now AND t=now+t_int.
+# Tracker soft margin -- follows target this far below MIN_EL rather
+# than freezing. Keeps dish on-target if integration runs slightly long.
+# Beam efficiency at 2deg offset: exp(-4*ln2*(2/4)^2) = 0.76 -- acceptable.
 TRACK_SOFT_MARGIN = 2.0   # deg below MIN_EL tracker will still follow target
-SCHED_EL_BUFFER   = 3.0   # deg above MIN_EL required at START of observation
 
 # Beam FWHM ~= 4deg, Nyquist spacing = 2deg
 GRID_SPACING_DEG = 2.0
@@ -435,36 +440,16 @@ def rebuild_global_progress():
 # 3.  VISIBILITY PLANNING
 # -----------------------------------------------------------------------------
 
-def pointing_is_visible(ra_deg, dec_deg, jd, min_el=MIN_EL,
-                        check_future=True):
+def pointing_is_visible(ra_deg, dec_deg, jd, min_el=MIN_EL):
     """
-    Return (alt, az) if pointing is schedulable, else None.
-
-    Checks three conditions:
-      1. alt >= min_el + SCHED_EL_BUFFER at current time
-         (buffer ensures target stays above MIN_EL through integration)
-      2. alt >= min_el at jd + integration time
-         (confirms target does not drift below limit mid-observation)
-      3. alt >= horizon_clearance(az) (physical obstruction mask)
+    Return (alt, az) if pointing is above min_el and unobstructed, else None.
+    Single hard threshold -- no buffer stages or future checks.
     """
     alt, az = coord.get_altaz(ra_deg, dec_deg, jd,
                               LAT_DEG, LON_DEG, ALT_M,
                               equinox='J2000')
-
-    # Must be above MIN_EL + buffer at start
-    if alt < min_el + SCHED_EL_BUFFER:
+    if alt < min_el:
         return None
-
-    # Check elevation at end of integration
-    if check_future:
-        t_int_days = (NBLOCKS_OBS * NSAMPLES_FFT / SAMPLE_RATE * 2) / 86400
-        jd_end     = jd + t_int_days
-        alt_end, _ = coord.get_altaz(ra_deg, dec_deg, jd_end,
-                                     LAT_DEG, LON_DEG, ALT_M,
-                                     equinox='J2000')
-        if alt_end < min_el:
-            return None
-
     if USE_HORIZON_MASK:
         clearance = horizon_clearance(az)
         if alt < clearance:
@@ -563,7 +548,8 @@ def capture_spectrum(sdr, center_hz, nblocks, gain=GAIN,
       - Streaming: FFT runs continuously, no gap between capture and transform
       - Resilient: each small batch can retry independently on USB errors
     """
-    sdr.set_center_freq(center_hz)  # only freq changes per call
+    with _usb_lock:
+        sdr.set_center_freq(center_hz)  # only freq changes per call
     # set_sample_rate and set_gain fixed at init -- not repeated
 
 
@@ -577,7 +563,8 @@ def capture_spectrum(sdr, center_hz, nblocks, gain=GAIN,
         for attempt in range(1, max_retries + 1):
             try:
                 # Fetch small batch of raw samples
-                result = sdr.capture_data(nsamples=nsamples, nblocks=batch)
+                with _usb_lock:
+                    result = sdr.capture_data(nsamples=nsamples, nblocks=batch)
                 v      = _parse_voltages(result, nsamples)   # (batch, nsamples)
 
                 # FFT each block and accumulate power immediately
@@ -655,8 +642,7 @@ def freq_switch_pair(sdr, center_hz, offset_hz, nblocks,
         rf_hz            : RF frequency axis for ON position
         T_diff           : ON - OFF difference spectrum
         spec_on          : averaged ON spectrum
-        spec_off_aligned : averaged OFF spectrum interpolated onto ON grid
-    """
+        spec_off_aligned : averaged OFF spectrum    """
     # Standard convention: ON below HI_FREQ, OFF above HI_FREQ
     lo_on  = center_hz - offset_hz
     lo_off = center_hz + offset_hz
@@ -667,7 +653,8 @@ def freq_switch_pair(sdr, center_hz, offset_hz, nblocks,
 
     # --- All ON blocks (one PLL settle before capture starts) ---
     print(f"[freq_switch] ON  position ({lo_on/1e6:.4f} MHz)...")
-    sdr.set_center_freq(lo_on)
+    with _usb_lock:
+        sdr.set_center_freq(lo_on)
     # sample_rate and gain constant -- only center_freq changes
 
     time.sleep(PLL_SETTLE_SEC)   # single settle for this LO position
@@ -680,7 +667,8 @@ def freq_switch_pair(sdr, center_hz, offset_hz, nblocks,
 
     # --- All OFF blocks (one PLL settle before capture starts) ---
     print(f"[freq_switch] OFF position ({lo_off/1e6:.4f} MHz)...")
-    sdr.set_center_freq(lo_off)
+    with _usb_lock:
+        sdr.set_center_freq(lo_off)
     # sample_rate and gain constant -- only center_freq changes
 
     time.sleep(PLL_SETTLE_SEC)   # single settle for this LO position
@@ -703,120 +691,75 @@ def freq_switch_pair_parallel(sdr0, sdr1, center_hz, offset_hz, nblocks,
                                nsamples=NSAMPLES_FFT,
                                quit_event=None):
     """
-    Producer-consumer parallel capture for both SDR polarisations.
+    Capture ON and OFF spectra on both SDRs in parallel threads.
+    Each SDR runs sequentially within its own thread (no producer-consumer).
+    _usb_lock serialises all USB calls so only one libusb call runs at a time.
 
-    Two producer threads capture raw voltage blocks from each SDR and
-    push them onto per-SDR queues. Two consumer threads pull blocks
-    from the queues, FFT them, and accumulate the power spectrum.
-    This decouples USB I/O from FFT computation so both run concurrently
-    -- the Pi's USB controller and CPU are both kept busy simultaneously
-    rather than alternating between capture and computation.
-
-    Architecture:
-      producer0 (SDR0) -> queue0 -> consumer0 (FFT+accumulate pol0)
-      producer1 (SDR1) -> queue1 -> consumer1 (FFT+accumulate pol1)
-    Both producer-consumer pairs run in parallel.
+    Both threads share _usb_lock so they effectively take turns on USB,
+    but the FFT accumulation (no USB) runs truly in parallel, and the
+    PLL settle sleeps also overlap -- saving ~50% time vs fully sequential.
     """
-    import queue as qmod
-
     lo_on  = center_hz - offset_hz
     lo_off = center_hz + offset_hz
 
     results = {}
     errors  = {}
 
-    def run_one_sdr(key, sdr, sdr_lock):
-        """Producer-consumer pipeline for one SDR."""
+    def capture_sdr(key, sdr):
         try:
-            with sdr_lock:
-                pass   # gain and sample_rate set once at SDR init
-
             # ON position
-            sdr.set_center_freq(lo_on)
-            time.sleep(PLL_SETTLE_SEC * 2)
-            _ = sdr.capture_data(nsamples=nsamples, nblocks=4)  # warm-up
+            with _usb_lock:
+                sdr.set_center_freq(lo_on)
+            time.sleep(PLL_SETTLE_SEC)
+            with _usb_lock:
+                sdr.capture_data(nsamples=nsamples, nblocks=4)
 
-            # Producer-consumer for ON capture
-            on_q   = qmod.Queue(maxsize=8)  # bounded: producer blocks if consumer slow
             on_acc = np.zeros(nsamples, dtype=np.float64)
-
-            def produce_on():
-                remaining = nblocks
-                while remaining > 0:
-                    if quit_event is not None and quit_event.is_set():
-                        on_q.put(None); return
-                    batch = min(STREAM_BATCH, remaining)
-                    raw   = sdr.capture_data(nsamples=nsamples, nblocks=batch)
-                    on_q.put(raw)
-                    remaining -= batch
-                on_q.put(None)   # sentinel
-
-            def consume_on():
-                while True:
-                    raw = on_q.get()
-                    if raw is None: break
-                    v = _parse_voltages(raw, nsamples)
-                    for block in v:
-                        on_acc += np.abs(np.fft.fft(
-                            block.astype(np.complex64))) ** 2
-
-            pt = threading.Thread(target=produce_on, daemon=True)
-            ct = threading.Thread(target=consume_on, daemon=True)
-            pt.start(); ct.start()
-            pt.join();  ct.join()
-
-            if quit_event is not None and quit_event.is_set():
-                raise RuntimeError("quit during ON capture")
+            blocks_done = 0
+            while blocks_done < nblocks:
+                if quit_event is not None and quit_event.is_set():
+                    raise RuntimeError(f"quit during {key} ON")
+                batch = min(STREAM_BATCH, nblocks - blocks_done)
+                with _usb_lock:
+                    raw = sdr.capture_data(nsamples=nsamples, nblocks=batch)
+                v = _parse_voltages(raw, nsamples)
+                for block in v:
+                    on_acc += np.abs(np.fft.fft(block.astype(np.complex64))) ** 2
+                blocks_done += batch
 
             spec_on = np.fft.fftshift(on_acc / nblocks)
             rf_on   = build_freqs(lo_on, nsamples)
 
             # OFF position
-            sdr.set_center_freq(lo_off)
-            time.sleep(PLL_SETTLE_SEC * 2)
-            _ = sdr.capture_data(nsamples=nsamples, nblocks=4)  # warm-up
+            with _usb_lock:
+                sdr.set_center_freq(lo_off)
+            time.sleep(PLL_SETTLE_SEC)
+            with _usb_lock:
+                sdr.capture_data(nsamples=nsamples, nblocks=4)
 
-            off_q   = qmod.Queue(maxsize=8)
             off_acc = np.zeros(nsamples, dtype=np.float64)
-
-            def produce_off():
-                remaining = nblocks
-                while remaining > 0:
-                    if quit_event is not None and quit_event.is_set():
-                        off_q.put(None); return
-                    batch = min(STREAM_BATCH, remaining)
-                    raw   = sdr.capture_data(nsamples=nsamples, nblocks=batch)
-                    off_q.put(raw)
-                    remaining -= batch
-                off_q.put(None)
-
-            def consume_off():
-                while True:
-                    raw = off_q.get()
-                    if raw is None: break
-                    v = _parse_voltages(raw, nsamples)
-                    for block in v:
-                        off_acc += np.abs(np.fft.fft(
-                            block.astype(np.complex64))) ** 2
-
-            pt = threading.Thread(target=produce_off, daemon=True)
-            ct = threading.Thread(target=consume_off, daemon=True)
-            pt.start(); ct.start()
-            pt.join();  ct.join()
+            blocks_done = 0
+            while blocks_done < nblocks:
+                if quit_event is not None and quit_event.is_set():
+                    raise RuntimeError(f"quit during {key} OFF")
+                batch = min(STREAM_BATCH, nblocks - blocks_done)
+                with _usb_lock:
+                    raw = sdr.capture_data(nsamples=nsamples, nblocks=batch)
+                v = _parse_voltages(raw, nsamples)
+                for block in v:
+                    off_acc += np.abs(np.fft.fft(block.astype(np.complex64))) ** 2
+                blocks_done += batch
 
             spec_off = np.fft.fftshift(off_acc / nblocks)
             rf_off   = build_freqs(lo_off, nsamples)
-
             results[key] = (rf_on, spec_on, rf_off, spec_off)
 
         except Exception as e:
             errors[key] = e
 
-    # Run both SDRs in parallel -- staggered start avoids simultaneous USB init
-    t0 = threading.Thread(target=run_one_sdr,
-                          args=('pol0', sdr0, _sdr0_lock), daemon=True)
-    t1 = threading.Thread(target=run_one_sdr,
-                          args=('pol1', sdr1, _sdr1_lock), daemon=True)
+    # Both SDRs in parallel threads -- staggered 0.25s to avoid simultaneous init
+    t0 = threading.Thread(target=capture_sdr, args=('pol0', sdr0), daemon=True)
+    t1 = threading.Thread(target=capture_sdr, args=('pol1', sdr1), daemon=True)
     t0.start()
     time.sleep(0.25)
     t1.start()
@@ -1011,28 +954,56 @@ def save_pointing(pointing, jd, lo_hz, rf0, spec0, rf1, spec1,
         min_el_deg       = MIN_EL,
         grid_spacing_deg = GRID_SPACING_DEG,
     )
+    # Keys saved explicitly in savez_compressed below -- must be removed
+    # from extra_meta BEFORE meta.update() so they don't end up in **meta
+    # and cause "multiple values for keyword argument" TypeError.
+    EXPLICIT_KEYS = [
+        'spec_on_pol0', 'spec_off_pol0', 'spec_on_pol1', 'spec_off_pol1',
+        'rf_hz_on_pol0', 'rf_hz_off_pol0', 'rf_hz_on_pol1', 'rf_hz_off_pol1',
+        'T_ant0_cosb', 'T_ant1_cosb',
+        'on0', 'off0', 'on1', 'off1',   # legacy key names
+    ]
+    # Extract explicit keys from extra_meta before merging into meta
+    explicit = {}
     if extra_meta:
-        meta.update(extra_meta)
+        for k in EXPLICIT_KEYS:
+            if k in extra_meta:
+                explicit[k] = extra_meta.pop(k)
+        meta.update(extra_meta)   # now safe -- no duplicate keys
+
+    def _get(key, default=None):
+        """Get from pre-extracted explicit keys."""
+        val = explicit.get(key, explicit.get(
+            {'spec_on_pol0':'on0','spec_off_pol0':'off0',
+             'spec_on_pol1':'on1','spec_off_pol1':'off1'}.get(key, ''),
+            default if default is not None else np.array([])))
+        return val if val is not None else (default if default is not None else np.array([]))
 
     # Compute velocity axis for storage
     vel_kms = C_MS * (HI_FREQ - rf0) / HI_FREQ / 1e3
 
     np.savez_compressed(
         tmp_fname,
-        # Frequency and velocity axes
-        rf_hz_pol0      = rf0,
-        rf_hz_pol1      = rf1,
-        velocity_kms    = vel_kms,          # stored in file -- no separate _vel.npy needed
-        # Frequency-switched difference spectra (main data product)
+        # Velocity axis
+        velocity_kms    = vel_kms,
+        # Scaled T_ant spectra (pol0 and pol1 on ON frequency grid)
         spec_pol0       = spec0,
         spec_pol1       = spec1,
-        # Raw ON and OFF spectra saved separately for flexible baseline removal
-        # ON  = LO tuned to HI_FREQ - FREQ_OFFSET  (signal in band)
-        # OFF = LO tuned to HI_FREQ + FREQ_OFFSET  (signal shifted out of band)
-        spec_on_pol0    = extra_meta.pop('on0',  np.array([])) if extra_meta else np.array([]),
-        spec_off_pol0   = extra_meta.pop('off0', np.array([])) if extra_meta else np.array([]),
-        spec_on_pol1    = extra_meta.pop('on1',  np.array([])) if extra_meta else np.array([]),
-        spec_off_pol1   = extra_meta.pop('off1', np.array([])) if extra_meta else np.array([]),
+        # Raw ON spectra on their native frequency grids
+        spec_on_pol0    = _get('spec_on_pol0'),
+        spec_off_pol0   = _get('spec_off_pol0'),
+        spec_on_pol1   = _get('spec_on_pol1'),
+        spec_off_pol1   = _get('spec_off_pol1'),
+        # Frequency axes for ON and OFF positions
+        rf_hz_pol0      = rf0,
+        rf_hz_pol1      = rf1,
+        rf_hz_on_pol0   = _get('rf_hz_on_pol0',  rf0),
+        rf_hz_off_pol0  = _get('rf_hz_off_pol0'),
+        rf_hz_on_pol1   = _get('rf_hz_on_pol1',  rf1),
+        rf_hz_off_pol1  = _get('rf_hz_off_pol1'),
+        # cos(b) corrected spectra
+        T_ant0_cosb     = _get('T_ant0_cosb'),
+        T_ant1_cosb     = _get('T_ant1_cosb'),
         # Noise diode calibration spectra
         P0_on           = cal_data.get('P0_on',  np.array([])),
         P0_off          = cal_data.get('P0_off', np.array([])),
@@ -1121,11 +1092,12 @@ def observe_pointing(pointing, dish, sdr0, sdr1, noise,
     """
     ra, dec = pointing['ra'], pointing['dec']
 
-    # Check visibility
+    # Single visibility check -- hard limit at MIN_EL
     jd     = timing.julian_date()
     result = pointing_is_visible(ra, dec, jd)
     if result is None:
-        print(f"[obs] {pointing['pointing_id']} not visible -- skipping.")
+        print(f"[obs] {pointing['pointing_id']} not visible "
+              f"(el < {MIN_EL}deg) -- skipping.")
         return None
     alt0, az0 = result
 
@@ -1246,13 +1218,12 @@ def observe_pointing(pointing, dish, sdr0, sdr1, noise,
             is_hvc_window        = is_hvc,
             cosb                 = cosb,
             cosb_correction      = 1.0 / cosb,
-            # Raw ON and OFF on their own grids -- no interpolation applied
-            spec_on_pol0  = on0,   spec_off_pol0 = off0,
-            spec_on_pol1  = on1,   spec_off_pol1 = off1,
+            # spec_on/off, rf grids, T_ant_cosb are passed directly to
+            # save_pointing as positional/keyword args -- not duplicated here
+            on0 = on0, off0 = off0, on1 = on1, off1 = off1,
             rf_hz_on_pol0 = rf_on0, rf_hz_off_pol0 = rf_off0,
             rf_hz_on_pol1 = rf_on1, rf_hz_off_pol1 = rf_off1,
-            T_ant0_cosb   = T_ant0_cosb,
-            T_ant1_cosb   = T_ant1_cosb,
+            T_ant0_cosb = T_ant0_cosb, T_ant1_cosb = T_ant1_cosb,
         )
 
         win_fname = save_pointing(
@@ -1377,7 +1348,7 @@ def sort_by_elevation_priority(pending, jd):
     return [(x[0], x[1]) for x in ordered]
 
 
-def run_survey(resume=True, dry_run=False, resort_every=10):
+def run_survey(resume=True, dry_run=False, resort_every=30):
     """
     Main survey loop with elevation-priority scheduling and per-day directories.
 
@@ -1602,10 +1573,23 @@ def run_survey(resume=True, dry_run=False, resort_every=10):
             print(f"\n[scheduler] Next target: {pid}  "
                   f"(scheduled el={sched_alt:.1f}deg)")
 
-            fname = observe_pointing(
-                pointing, dish, sdr0, sdr1, noise,
-                tracker, cal_data, data_dir=data_dir, dry_run=dry_run
-            )
+            try:
+                fname = observe_pointing(
+                    pointing, dish, sdr0, sdr1, noise,
+                    tracker, cal_data, data_dir=data_dir, dry_run=dry_run
+                )
+            except Exception as obs_err:
+                # Log the error but keep the survey running
+                print(f"[survey] ERROR observing {pid}: {obs_err}")
+                import traceback
+                traceback.print_exc()
+                # Re-queue this pointing and try to recover the SDRs
+                skip_count += 1
+                pending_iter.append((pointing, sched_alt))
+                # Give hardware time to recover before next attempt
+                print("[survey] Waiting 30s for hardware recovery...")
+                time.sleep(30)
+                fname = None
 
             if fname is not None and fname != "DRY_RUN":
                 global_done.add(pid)
@@ -1616,9 +1600,10 @@ def run_survey(resume=True, dry_run=False, resort_every=10):
             elif fname == "DRY_RUN":
                 obs_count += 1
             else:
-                # Pointing was not visible when we tried -- put it at the back
+                # Pointing was not visible or failed -- put it at the back
                 skip_count += 1
-                pending_iter.append((pointing, sched_alt))
+                if (pointing, sched_alt) not in pending_iter:
+                    pending_iter.append((pointing, sched_alt))
                 if skip_count >= len(pending_iter):
                     print("[survey] All remaining pointings currently below "
                           "horizon -- waiting 5 minutes before retrying.")
@@ -1692,7 +1677,7 @@ def main():
                         default=None,
                         help='Observing mode: hvc_only (default), both, or std_only. '
                              'Overrides OBSERVE_MODE constant in script.')
-    parser.add_argument('--resort-every', type=int, default=10, metavar='N',
+    parser.add_argument('--resort-every', type=int, default=30, metavar='N',
                         help='Re-sort by elevation every N successful observations (default 10)')
     parser.add_argument('--rebuild-progress', action='store_true',
                         help='Rebuild global progress from per-day files and exit '
